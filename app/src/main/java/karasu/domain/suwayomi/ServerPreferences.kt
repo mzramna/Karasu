@@ -92,6 +92,12 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
     fun categoryLinksSnapshot() =
         preferenceStore.getString(Preference.appStateKey("suwayomi_category_links_snapshot"), "")
 
+    /**
+     * `sourceId|url -> chapter url -> packed reading state` of the chapters that are read or past page 0:
+     * what both sides agreed on, needed to tell "marked unread" from "never read".
+     */
+    fun progressSnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_progress_snapshot"), "")
+
     /** `sourceId|url -> chapter url -> last read (epoch seconds)`: the agreed value of each history entry. */
     fun historySnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_history_snapshot"), "")
 

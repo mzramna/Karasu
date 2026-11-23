@@ -123,6 +123,14 @@ Secrets: usa os mesmos do `build_push.yml` (`SIGNING_KEY`, `ALIAS`, `KEY_STORE_P
 Opcional: `SYNC_PAT` (token com escopos `repo` e `workflow`), necessário apenas se o upstream alterar
 arquivos em `.github/workflows`, que o `GITHUB_TOKEN` não pode enviar.
 
+## Progresso de leitura: lido e não lido
+
+O estado lido é comparado com o último estado combinado entre os dois lados (merge de 3 vias), então **marcar como não
+lido propaga** nos dois sentidos e o capítulo não volta a ficar lido na sincronização seguinte. O "não lido" leva a
+página junto (volta ao início), a não ser que o outro lado tenha lido mais desde a última sincronização: leitura nova
+nunca é jogada fora por um "não lido" antigo. A **página continua só avançando**: o servidor arredonda a página que
+guarda para as que ele conhece, e seguir esse recuo comeria o ponto em que você parou.
+
 ## Histórico e exclusões (nos dois sentidos)
 
 * **Histórico.** "Quando cada capítulo foi lido" sincroniza por capítulo, comparando com o último valor combinado

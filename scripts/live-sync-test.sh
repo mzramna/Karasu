@@ -6,7 +6,7 @@
 #   SERVER_JAR=... PGHOST=localhost PGUSER=postgres PGPASSWORD=x scripts/live-sync-test.sh postgres
 #
 # The server is started once to create its schema, stopped, seeded (scripts/live/seed.py), started again
-# with Basic Auth (work /live/m30 is reserved for ServerSyncApiLiveTest, m01..m25 for the bidirectional tests), and the tests in SyncLiveBidirectionalTest / ServerSyncApiLiveTest run against it.
+# with Basic Auth (work /live/m30 is reserved for ServerSyncApiLiveTest, m01..m29 for the bidirectional tests), and the tests in SyncLiveBidirectionalTest / ServerSyncApiLiveTest run against it.
 set -euo pipefail
 
 DB="${1:-h2}"

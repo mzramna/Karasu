@@ -236,7 +236,7 @@ class SyncLiveBidirectionalTest {
     }
 
     @Test
-    fun `progress only moves forward, and marking unread is not carried over`() {
+    fun `a page that goes back by itself is not followed, the farther page wins`() {
         val app = device("phone", 7)
         app.read(7, 1, page = 2)
         app.sync()
@@ -246,13 +246,87 @@ class SyncLiveBidirectionalTest {
         app.sync()
         assertEquals(2, app.chapter(7, 1).last_page_read, "the app keeps the farther page")
         assertEquals(2, server.chapter(7, 1).lastPageRead, "and the server is brought forward again")
+    }
 
-        // marking unread on the app does not undo the read state on the server...
-        app.read(7, 1, page = 2, read = false)
+    @Test
+    fun `marking a chapter unread on the app marks it unread on the server, and it stays that way`() {
+        val app = device("phone", 26)
+        app.read(26, 1, page = 2)
+        app.read(26, 2, page = 1)
         app.sync()
-        assertEquals(true, server.chapter(7, 1).isRead)
-        // ...and the read state on the server is not lost on the app either
-        assertTrue(app.chapter(7, 1).read)
+        assertEquals(true, server.chapter(26, 1).isRead)
+
+        app.read(26, 1, page = 0, read = false)
+        val summary = app.sync()
+
+        assertEquals(false, server.chapter(26, 1).isRead, "unread on the server")
+        assertEquals(0, server.chapter(26, 1).lastPageRead, "and back at the start")
+        assertEquals(true, server.chapter(26, 2).isRead, "the other chapter is left alone")
+        assertTrue(summary.chaptersPushed >= 1)
+
+        // the old behaviour: the next sync read it again. It must not.
+        app.sync()
+        app.sync()
+        assertFalse(app.chapter(26, 1).read, "still unread on the app")
+        assertEquals(false, server.chapter(26, 1).isRead, "still unread on the server")
+    }
+
+    @Test
+    fun `marking a chapter unread on the server marks it unread on the app, and it stays that way`() {
+        val app = device("phone", 27)
+        app.read(27, 1, page = 2)
+        app.read(27, 2, page = 1)
+        app.sync()
+        assertTrue(app.chapter(27, 1).read)
+
+        // the WebUI's "mark as unread" only changes the flag, the page is kept
+        server.read(27, 1, page = 2, read = false)
+        val summary = app.sync()
+
+        assertFalse(app.chapter(27, 1).read, "unread on the app")
+        assertTrue(app.chapter(27, 2).read, "the other chapter is left alone")
+        assertTrue(summary.chaptersPulled >= 1)
+
+        app.sync()
+        app.sync()
+        assertFalse(app.chapter(27, 1).read, "still unread on the app")
+        assertEquals(false, server.chapter(27, 1).isRead, "still unread on the server")
+    }
+
+    @Test
+    fun `an unmarking does not undo reading done on the other side since`() {
+        val app = device("phone", 28)
+        app.read(28, 1, page = 1)
+        app.sync()
+
+        // unread on the app, but read further on the server before the next sync
+        app.read(28, 1, page = 0, read = false)
+        server.read(28, 1, page = 2, read = true)
+        app.sync()
+
+        assertTrue(app.chapter(28, 1).read, "the newer reading wins on the app")
+        assertEquals(2, app.chapter(28, 1).last_page_read)
+        assertEquals(true, server.chapter(28, 1).isRead, "and stays on the server")
+    }
+
+    @Test
+    fun `an unread made on one device reaches the other through the server`() {
+        val phone = device("phone", 29)
+        val tablet = device("tablet", 29)
+        phone.read(29, 1, page = 2)
+        phone.sync()
+        tablet.sync()
+        assertTrue(tablet.chapter(29, 1).read)
+
+        tablet.read(29, 1, page = 0, read = false)
+        tablet.sync()
+        phone.sync()
+
+        assertFalse(phone.chapter(29, 1).read, "the phone follows the tablet")
+        assertEquals(0, phone.chapter(29, 1).last_page_read)
+        tablet.sync()
+        assertFalse(tablet.chapter(29, 1).read, "and nobody read it again")
+        assertEquals(false, server.chapter(29, 1).isRead)
     }
 
     // =========================================================================== history

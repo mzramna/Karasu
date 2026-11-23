@@ -27,15 +27,42 @@ object SyncMath {
     data class Progress(val read: Boolean, val lastPageRead: Int)
 
     /**
-     * Reading only moves forward: a chapter read on either side is read, and the furthest page wins.
-     *
-     * The price is that marking a chapter *unread* on one device does not spread — the next sync
-     * sees it read on the other side and reads it again. Undoing needs a timestamp per change,
-     * which Karasu's chapter rows do not carry; forward-only is the safe failure mode, since the
-     * worst case is a chapter marked read that should not be, never a lost place.
+     * The two-sided rule, used when there is nothing to compare against or both sides moved: a chapter
+     * read on either side is read, and the furthest page wins. Never loses a place.
      */
     fun mergeProgress(local: Progress, remote: Progress): Progress =
         Progress(local.read || remote.read, max(local.lastPageRead, remote.lastPageRead))
+
+    /**
+     * Three-way merge of a chapter's reading state against [base], the state both sides agreed on at
+     * the last sync. What the base adds is the ability to tell "marked unread here" from "never read
+     * here", so unmarking travels like any other change.
+     *
+     * - Marking a chapter unread on one side makes it unread on the other, and takes the page with it
+     *   (an unread chapter starts again), unless the other side has read further since the base:
+     *   new reading is never thrown away by an old unmarking.
+     * - Everything else keeps the forward-only rule: read on either side is read, furthest page wins.
+     *   A page that goes back by itself is not followed, because the server rounds the page it stores
+     *   down to the pages it knows about, and following that would eat the user's place.
+     * - With no base (first sync) nothing counts as unmarked, so it is a plain union.
+     */
+    fun mergeProgress(base: Progress, local: Progress, remote: Progress): Progress {
+        if (local == remote) return local
+        val localUnmarked = base.read && !local.read
+        val remoteUnmarked = base.read && !remote.read
+        val localAdvanced = local.lastPageRead > base.lastPageRead
+        val remoteAdvanced = remote.lastPageRead > base.lastPageRead
+        return when {
+            localUnmarked && !remoteUnmarked && !remoteAdvanced -> local
+            remoteUnmarked && !localUnmarked && !localAdvanced -> remote
+            else -> mergeProgress(local, remote)
+        }
+    }
+
+    /** A chapter's agreed state as one number, so a snapshot of thousands of chapters stays small. */
+    fun Progress.pack(): Int = lastPageRead * 2 + (if (read) 1 else 0)
+
+    fun unpackProgress(packed: Int): Progress = Progress(read = packed and 1 == 1, lastPageRead = packed shr 1)
 
     /**
      * One extra source of a merged manga, reduced to what identifies and configures it.

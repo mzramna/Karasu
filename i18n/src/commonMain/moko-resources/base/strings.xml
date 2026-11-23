@@ -1010,7 +1010,7 @@
     <string name="suwayomi_sync_categories">Categories</string>
     <string name="suwayomi_sync_categories_summary">Same categories and the same manga in them, on both sides</string>
     <string name="suwayomi_sync_progress">Reading progress</string>
-    <string name="suwayomi_sync_progress_summary">Read chapters and the page you stopped on. Only moves forward.</string>
+    <string name="suwayomi_sync_progress_summary">Read and unread chapters, and the page you stopped on. The page only moves forward.</string>
     <string name="suwayomi_sync_merged">Merged sources</string>
     <string name="suwayomi_sync_merged_summary">Extra sources of a manga and their order</string>
     <string name="suwayomi_sync_history">History</string>

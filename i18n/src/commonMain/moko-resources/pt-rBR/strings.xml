@@ -179,7 +179,7 @@
     <string name="suwayomi_sync_categories">Categorias</string>
     <string name="suwayomi_sync_categories_summary">As mesmas categorias e os mesmos mangás nelas, dos dois lados</string>
     <string name="suwayomi_sync_progress">Progresso de leitura</string>
-    <string name="suwayomi_sync_progress_summary">Capítulos lidos e a página em que você parou. Só avança.</string>
+    <string name="suwayomi_sync_progress_summary">Capítulos lidos e não lidos, e a página em que você parou. A página só avança.</string>
     <string name="suwayomi_sync_merged">Fontes mescladas</string>
     <string name="suwayomi_sync_merged_summary">Fontes extras de um mangá e a ordem delas</string>
     <string name="suwayomi_sync_history">Histórico</string>

@@ -115,4 +115,41 @@ class SyncMathTest {
         // removed on the server, read again here since
         assertEquals(SyncMath.HistoryOutcome(300, changeLocal = false, changeRemote = true), SyncMath.mergeHistory(100, 300, 0))
     }
+
+    @Test
+    fun `progress - marking unread travels, and takes the page with it`() {
+        val base = Progress(true, 5)
+        // unread here, the server still at the base: it becomes unread there, page back to the start
+        assertEquals(Progress(false, 0), SyncMath.mergeProgress(base, Progress(false, 0), Progress(true, 5)))
+        // unread on the server (which keeps its page), the app still at the base
+        assertEquals(Progress(false, 5), SyncMath.mergeProgress(base, Progress(true, 5), Progress(false, 5)))
+        // unread on both: stays unread
+        assertEquals(Progress(false, 0), SyncMath.mergeProgress(base, Progress(false, 0), Progress(false, 0)))
+    }
+
+    @Test
+    fun `progress - an old unmarking never throws away reading done since`() {
+        val base = Progress(true, 5)
+        // unread here, but the server read further in the meantime
+        assertEquals(Progress(true, 9), SyncMath.mergeProgress(base, Progress(false, 0), Progress(true, 9)))
+        assertEquals(Progress(true, 9), SyncMath.mergeProgress(base, Progress(true, 9), Progress(false, 0)))
+    }
+
+    @Test
+    fun `progress - the page still only moves forward, and no base means a plain union`() {
+        val base = Progress(true, 5)
+        // the server rounds pages down to the ones it knows; following that back would eat the place
+        assertEquals(Progress(true, 5), SyncMath.mergeProgress(base, Progress(true, 5), Progress(true, 0)))
+        assertEquals(Progress(true, 9), SyncMath.mergeProgress(base, Progress(true, 9), Progress(true, 7)))
+        // first sync: nothing is "unmarked", so read on either side is read
+        assertEquals(Progress(true, 9), SyncMath.mergeProgress(Progress(false, 0), Progress(false, 9), Progress(true, 2)))
+        assertEquals(Progress(false, 0), SyncMath.mergeProgress(Progress(false, 0), Progress(false, 0), Progress(false, 0)))
+    }
+
+    @Test
+    fun `progress - a snapshot entry packs and unpacks`() {
+        listOf(Progress(false, 0), Progress(true, 0), Progress(false, 12), Progress(true, 187)).forEach {
+            assertEquals(it, SyncMath.unpackProgress(with(SyncMath) { it.pack() }))
+        }
+    }
 }

@@ -360,6 +360,8 @@ class SyncSuwayomiServer(
             .associateBy { SyncMath.mangaKey(it.source, it.url) }
         val linkSnapshot = loadLinkSnapshot()
         val newLinkSnapshot = mutableMapOf<String, Set<String>>()
+        val progressSnapshot = loadProgressSnapshot()
+        val newProgressSnapshot = mutableMapOf<String, Map<String, Int>>()
         val historySnapshot = loadHistorySnapshot()
         val newHistorySnapshot = mutableMapOf<String, Map<String, Long>>()
 
@@ -383,9 +385,10 @@ class SyncSuwayomiServer(
                     newLinkSnapshot[key] = names
                 }
                 if (progress) {
-                    val (p, q) = reconcileProgress(manga, remote, remotePatches)
+                    val (p, q, agreed) = reconcileProgress(manga, remote, remotePatches, progressSnapshot[key].orEmpty())
                     pulled += p
                     pushed += q
+                    if (agreed.isNotEmpty()) newProgressSnapshot[key] = agreed
                 }
                 if (history) {
                     val patched = remotePatches.mapTo(mutableSetOf()) { it.chapterId }
@@ -412,6 +415,7 @@ class SyncSuwayomiServer(
         }
 
         if (categories != null) saveLinkSnapshot(newLinkSnapshot)
+        if (progress) saveProgressSnapshot(newProgressSnapshot)
         if (history) saveHistorySnapshot(newHistorySnapshot)
         summary = summary.copy(
             historyPulled = historyPulled,
@@ -503,28 +507,32 @@ class SyncSuwayomiServer(
     }
 
     /**
-     * Merges read state chapter by chapter, matched by chapter url inside the manga.
+     * Merges read state chapter by chapter, matched by chapter url inside the manga, against the
+     * state both sides agreed on last time (see [SyncMath.mergeProgress]).
      * Local changes are applied immediately; server changes are queued in [patches] so the whole
      * page goes out as a few requests.
-     * @return chapters changed locally and chapters queued for the server.
+     * @return chapters changed locally, chapters queued for the server, and the agreed states to remember.
      */
     private suspend fun reconcileProgress(
         manga: Manga,
         remote: RemoteManga,
         patches: MutableList<ServerSyncApi.ChapterPatch>,
-    ): Pair<Int, Int> {
+        base: Map<String, Int>,
+    ): Triple<Int, Int, Map<String, Int>> {
         val mangaId = manga.id!!
         val remoteByUrl = remote.chapters.associateBy { it.url }
-        if (remoteByUrl.isEmpty()) return 0 to 0
+        if (remoteByUrl.isEmpty()) return Triple(0, 0, emptyMap())
 
         val updates = mutableListOf<ChapterUpdate>()
+        val agreed = mutableMapOf<String, Int>()
         var queued = 0
         for (chapter in getChapter.awaitAllRaw(mangaId, false)) {
             val remoteChapter = remoteByUrl[chapter.url] ?: continue
             val chapterId = chapter.id ?: continue
             val localState = Progress(chapter.read, chapter.last_page_read)
             val remoteState = remoteChapter.toProgress()
-            val merged = SyncMath.mergeProgress(localState, remoteState)
+            val baseState = base[chapter.url]?.let { SyncMath.unpackProgress(it) } ?: Progress(false, 0)
+            val merged = SyncMath.mergeProgress(baseState, localState, remoteState)
 
             if (merged != localState) {
                 val pageChanged = merged.lastPageRead != localState.lastPageRead
@@ -538,9 +546,10 @@ class SyncSuwayomiServer(
                 patches += ServerSyncApi.ChapterPatch(remoteChapter.id, merged.read, merged.lastPageRead)
                 queued++
             }
+            if (merged.read || merged.lastPageRead > 0) agreed[chapter.url] = with(SyncMath) { merged.pack() }
         }
         if (updates.isNotEmpty()) updateChapter.awaitAll(updates)
-        return updates.size to queued
+        return Triple(updates.size, queued, agreed)
     }
 
     /**
@@ -583,6 +592,16 @@ class SyncSuwayomiServer(
             if (outcome.result > 0) agreed[chapter.url] = outcome.result
         }
         return Triple(pulled, pushed, agreed)
+    }
+
+    private val progressSnapshotSerializer =
+        MapSerializer(String.serializer(), MapSerializer(String.serializer(), Int.serializer()))
+
+    private fun loadProgressSnapshot(): Map<String, Map<String, Int>> =
+        decode(preferences.progressSnapshot().get()) { json.decodeFromString(progressSnapshotSerializer, it) }
+
+    private fun saveProgressSnapshot(snapshot: Map<String, Map<String, Int>>) {
+        preferences.progressSnapshot().set(json.encodeToString(progressSnapshotSerializer, snapshot))
     }
 
     private val historySnapshotSerializer =
