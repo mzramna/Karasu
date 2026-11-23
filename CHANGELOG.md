@@ -10,6 +10,14 @@ The format is simplified version of [Keep a Changelog](https://keepachangelog.co
 
 ## [Unreleased]
 
+### Additions
+- Sync with a self-hosted Suwayomi server (Settings, "Suwayomi server"): categories, reading
+  progress, merged sources and chapters deleted on the server, matched by source and url. The server
+  is reached at a main address and, when that does not answer, at a fallback one (for example
+  Tailscale)
+- Chapters the Suwayomi server has already downloaded can be copied from it instead of the source
+- Backups can also be sent to the Suwayomi server when created, and restored from it
+
 ## [1.13.1]
 
 ### Additions
