@@ -56,6 +56,7 @@ import karasu.domain.backup.BackupPreferences
 import karasu.domain.category.interactor.TransferCategoryRules
 import karasu.domain.storage.StorageManager
 import karasu.domain.storage.StoragePreferences
+import karasu.data.suwayomi.ServerSyncApi
 import karasu.i18n.MR
 import karasu.presentation.component.ToolTipButton
 import karasu.presentation.component.preference.Preference
@@ -65,6 +66,7 @@ import karasu.presentation.component.preference.widget.PrefsHorizontalPadding
 import karasu.presentation.settings.ComposableSettings
 import karasu.presentation.settings.screen.data.StorageInfo
 import karasu.presentation.settings.screen.data.awaitCreateBackup
+import karasu.presentation.settings.screen.data.awaitRestoreFromServer
 import karasu.presentation.settings.screen.data.awaitRestoreBackup
 import karasu.presentation.settings.screen.data.storageLocationPicker
 import karasu.util.lang.getString
@@ -310,6 +312,9 @@ object SettingsDataScreen : ComposableSettings() {
                     )
                 },
 
+                // Only listed when sync with the Suwayomi server is on.
+                *serverRestoreItems(context, scope, alertDialog).toTypedArray(),
+
                 // Automatic backups
                 Preference.PreferenceItem.ListPreference(
                     pref = backupPreferences.backupInterval(),
@@ -337,6 +342,34 @@ object SettingsDataScreen : ComposableSettings() {
                     stringResource(MR.strings.backup_info) +
                         "\n\n" + stringResource(MR.strings.last_auto_backup_info, relativeTimeSpanString(lastAutoBackup)),
                 ),
+            ),
+        )
+    }
+
+    /**
+     * "Restore from the Suwayomi server", or nothing when sync with it is off. Evaluated on every
+     * composition on purpose: the switch lives on another screen and can change while this one
+     * is in the back stack.
+     */
+    @Composable
+    private fun serverRestoreItems(
+        context: Context,
+        scope: kotlinx.coroutines.CoroutineScope,
+        alertDialog: karasu.domain.DialogHostState,
+    ): List<Preference.PreferenceItem.TextPreference> {
+        val api = remember { Injekt.get<ServerSyncApi>() }
+        if (!api.isEnabled) return emptyList()
+        return listOf(
+            Preference.PreferenceItem.TextPreference(
+                title = stringResource(MR.strings.suwayomi_restore_from_server),
+                subtitle = stringResource(MR.strings.suwayomi_restore_from_server_summary),
+                onClick = {
+                    if (BackupRestoreJob.isRunning(context)) {
+                        context.toast(MR.strings.restore_in_progress)
+                    } else {
+                        scope.launch { alertDialog.awaitRestoreFromServer(context) }
+                    }
+                },
             ),
         )
     }

@@ -29,8 +29,14 @@ import eu.kanade.tachiyomi.util.system.workManager
 import java.util.concurrent.TimeUnit
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import karasu.data.suwayomi.ServerBackupTransfer
+import karasu.data.suwayomi.ServerSyncApi
 import karasu.domain.backup.BackupPreferences
 import karasu.domain.storage.StorageManager
+import karasu.domain.suwayomi.ServerPreferences
+import karasu.i18n.MR
+import karasu.util.lang.getString
+import kotlinx.coroutines.CancellationException
 
 class BackupCreatorJob(private val context: Context, workerParams: WorkerParameters) :
     CoroutineWorker(context, workerParams) {
@@ -54,6 +60,7 @@ class BackupCreatorJob(private val context: Context, workerParams: WorkerParamet
         return try {
             val location = BackupCreator(context).createBackup(uri, options, isAutoBackup)
             if (!isAutoBackup) notifier.showBackupComplete(UniFile.fromUri(context, location.toUri())!!)
+            if (shouldUploadToServer(isAutoBackup)) uploadToServer(location.toUri(), isAutoBackup)
             Result.success()
         } catch (e: Exception) {
             Logger.e(e) { "Unable to create backup" }
@@ -61,6 +68,36 @@ class BackupCreatorJob(private val context: Context, workerParams: WorkerParamet
             Result.failure()
         } finally {
             context.notificationManager.cancel(Notifications.ID_BACKUP_PROGRESS)
+        }
+    }
+
+    /** Automatic backups follow the setting; a manual one follows the box ticked when it was created. */
+    private fun shouldUploadToServer(isAutoBackup: Boolean): Boolean {
+        if (!Injekt.get<ServerSyncApi>().isEnabled) return false
+        return if (isAutoBackup) {
+            Injekt.get<ServerPreferences>().uploadAutoBackups().get()
+        } else {
+            inputData.getBoolean(UPLOAD_TO_SERVER_KEY, false)
+        }
+    }
+
+    /**
+     * The local backup is already safe by the time this runs, so a failed upload must never fail
+     * the job: it is reported for a manual backup (the person is waiting for it) and only logged
+     * for an automatic one.
+     */
+    private suspend fun uploadToServer(location: Uri, isAutoBackup: Boolean) {
+        try {
+            Injekt.get<ServerBackupTransfer>().upload(location)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.e(e) { "Unable to upload the backup to the Suwayomi server" }
+            if (!isAutoBackup) {
+                notifier.showBackupError(
+                    context.getString(MR.strings.suwayomi_backup_upload_failed, e.message ?: e::class.simpleName.orEmpty()),
+                )
+            }
         }
     }
 
@@ -114,11 +151,12 @@ class BackupCreatorJob(private val context: Context, workerParams: WorkerParamet
             }
         }
 
-        fun startNow(context: Context, uri: Uri, options: BackupOptions) {
+        fun startNow(context: Context, uri: Uri, options: BackupOptions, uploadToServer: Boolean = false) {
             val inputData = workDataOf(
                 IS_AUTO_BACKUP_KEY to false,
                 LOCATION_URI_KEY to uri.toString(),
                 BACKUP_FLAGS_KEY to options.asBooleanArray(),
+                UPLOAD_TO_SERVER_KEY to uploadToServer,
             )
             val request = OneTimeWorkRequestBuilder<BackupCreatorJob>()
                 .addTag(TAG_MANUAL)
@@ -135,3 +173,4 @@ private const val TAG_MANUAL = "$TAG_AUTO:manual"
 private const val IS_AUTO_BACKUP_KEY = "is_auto_backup" // Boolean
 private const val LOCATION_URI_KEY = "location_uri" // String
 private const val BACKUP_FLAGS_KEY = "backup_flags" // Int
+private const val UPLOAD_TO_SERVER_KEY = "upload_to_server" // Boolean
