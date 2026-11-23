@@ -1,0 +1,120 @@
+name: CI Integration
+
+# Roda o app contra um Suwayomi-Server de verdade (o fork) em H2 e em PostgreSQL: categorias, progresso,
+# histórico, fontes mescladas, downloads/exclusões, backups e política, nos dois sentidos.
+# Os testes são SyncLiveBidirectionalTest e ServerSyncApiLiveTest; scripts/live-sync-test.sh sobe o servidor.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "app/src/main/java/karasu/**"
+      - "app/src/test/java/karasu/**"
+      - "scripts/live*/**"
+      - "scripts/live-sync-test.sh"
+      - ".github/workflows/ci_integration.yml"
+  pull_request:
+    paths:
+      - "app/src/main/java/karasu/**"
+      - "app/src/test/java/karasu/**"
+      - "scripts/live*/**"
+      - "scripts/live-sync-test.sh"
+      - ".github/workflows/ci_integration.yml"
+  workflow_dispatch:
+    inputs:
+      server_ref:
+        description: "Branch/tag do fork do Suwayomi-Server a testar"
+        type: string
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Enquanto o fork do servidor não estiver no master, testamos a branch com o endpoint de histórico.
+  # Depois de mesclar, troque por "master".
+  DEFAULT_SERVER_REF: claude/suwayomi-sync
+
+jobs:
+  live:
+    name: App <-> server (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [h2, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Clone the app
+        uses: actions/checkout@v7
+
+      - name: Clone the server fork
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/Suwayomi-Server
+          ref: ${{ inputs.server_ref || env.DEFAULT_SERVER_REF }}
+          path: server
+
+      - name: Setup Android SDK
+        run: |
+          ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager "build-tools;35.0.0"
+
+      - name: Setup JDKs (17 for the app, 21 for the server)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.ref_name != github.event.repository.default_branch }}
+
+      - name: Copy CI gradle.properties
+        run: |
+          mkdir -p ~/.gradle
+          cp .github/runner-files/ci-gradle.properties ~/.gradle/gradle.properties
+
+      - name: Build the server JAR
+        working-directory: server
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME_21_X64 }}
+        run: |
+          ./gradlew :server:shadowJar --no-daemon
+          echo "SERVER_JAR=$(ls -t $PWD/server/build/Suwayomi-Server-*.jar | head -1)" >> "$GITHUB_ENV"
+
+      - name: Run the live sync tests on ${{ matrix.database }}
+        env:
+          PGHOST: 127.0.0.1
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
+        run: |
+          # the server runs on JDK 21 (PATH), Gradle for the app on JDK 17 (JAVA_HOME)
+          export PATH="$JAVA_HOME_21_X64/bin:$PATH"
+          scripts/live-sync-test.sh ${{ matrix.database }}
+
+      - name: Publish test report
+        uses: mikepenz/action-junit-report@v6
+        if: success() || failure()
+        with:
+          check_name: Live sync report (${{ matrix.database }})
+          include_passed: true
+          report_paths: "app/build/test-results/testStandardDebugUnitTest/TEST-*Live*.xml"

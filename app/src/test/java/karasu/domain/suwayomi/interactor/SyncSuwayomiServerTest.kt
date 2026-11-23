@@ -22,6 +22,8 @@ import karasu.domain.category.interactor.SetMangaCategories
 import karasu.domain.chapter.interactor.GetChapter
 import karasu.domain.chapter.interactor.UpdateChapter
 import karasu.domain.chapter.models.ChapterUpdate
+import karasu.domain.history.interactor.GetHistory
+import karasu.domain.history.interactor.UpsertHistory
 import karasu.domain.manga.interactor.GetManga
 import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSources
@@ -49,12 +51,14 @@ class SyncSuwayomiServerTest {
     private val mergedRepository = mockk<MergedMangaRepository>(relaxed = true)
     private val downloadManager = mockk<DownloadManager>(relaxed = true)
     private val sourceManager = mockk<SourceManager>(relaxed = true)
+    private val getHistory = mockk<GetHistory>(relaxed = true)
+    private val upsertHistory = mockk<UpsertHistory>(relaxed = true)
 
     private val manga = Manga.create("/m", "Title", 3L).apply { id = 1L }
 
     private fun sync() = SyncSuwayomiServer(
         api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
-        setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager,
+        setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
     )
 
     private fun chapter(id: Long, url: String, read: Boolean = false, page: Int = 0): Chapter =
@@ -76,6 +80,8 @@ class SyncSuwayomiServerTest {
         preferences.syncMergedSources().set(false)
         preferences.syncCategories().set(false)
         preferences.syncProgress().set(false)
+        preferences.syncHistory().set(false)
+        preferences.pushLocalDeletions().set(false)
         coEvery { getManga.awaitFavorites() } returns listOf(manga)
     }
 
@@ -229,5 +235,41 @@ class SyncSuwayomiServerTest {
         coVerify(exactly = 0) { setMangaCategories.await(any(), any()) }
         assertTrue(preferences.categoryLinksSnapshot().get().contains("drama"))
         assertFalse(preferences.categoryLinksSnapshot().get().contains("action"))
+    }
+
+    @Test
+    fun `a server without the history route does not stop the rest of the library sync`() = runBlocking {
+        preferences.syncHistory().set(true)
+        preferences.syncProgress().set(true)
+        val c = chapter(10, "/c1")
+        coEvery { getChapter.awaitAllRaw(1L, false) } returns listOf(c)
+        coEvery { getHistory.awaitAllByMangaId(1L) } returns emptyList()
+        // the server has the chapter read on the server, the app nothing
+        serverLibrary(
+            RemoteManga(7, "3", "/m", emptySet(), listOf(RemoteChapter(70, "/c1", isRead = false, lastPageRead = 0, lastReadAt = 0))),
+        )
+        // the app has history for it, so the sync wants to write it
+        coEvery { getHistory.awaitAllByMangaId(1L) } returns listOf(
+            eu.kanade.tachiyomi.data.database.models.History.create().apply { chapter_id = 10; last_read = 5_000_000 },
+        )
+        coEvery { api.putHistory(any()) } throws karasu.data.suwayomi.ServerApiException(404, "HTTP 404")
+
+        val summary = sync().await()
+
+        assertTrue(summary.errors.any { it.contains("history") }, "the user is told why history was not shared")
+        coVerify(exactly = 1) { api.putHistory(any()) }
+    }
+
+    @Test
+    fun `history is left alone when its switch is off`() = runBlocking {
+        preferences.syncProgress().set(true)
+        val c = chapter(10, "/c1")
+        coEvery { getChapter.awaitAllRaw(1L, false) } returns listOf(c)
+        serverLibrary(RemoteManga(7, "3", "/m", emptySet(), listOf(RemoteChapter(70, "/c1", lastReadAt = 99))))
+
+        sync().await()
+
+        coVerify(exactly = 0) { api.putHistory(any()) }
+        coVerify(exactly = 0) { upsertHistory.await(any<Long>(), any(), any()) }
     }
 }

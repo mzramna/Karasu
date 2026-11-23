@@ -45,12 +45,21 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
 
     fun syncProgress() = preferenceStore.getBoolean("suwayomi_sync_progress", true)
 
+    /** What was read when, and removing a chapter from the history, in both directions. */
+    fun syncHistory() = preferenceStore.getBoolean("suwayomi_sync_history", true)
+
     fun syncMergedSources() = preferenceStore.getBoolean("suwayomi_sync_merged", true)
 
     /** Whether chapters deleted from the server's side are also deleted from this device. */
     fun applyRemoteDeletions() = preferenceStore.getBoolean("suwayomi_apply_deletions", true)
 
     /** Whether automatic backups are also uploaded to the server. Manual ones ask per backup. */
+    /**
+     * Tell the server (and through it, the other devices) when a downloaded chapter is deleted here.
+     * Off by default: deleting something to free space on a phone should not empty the tablet.
+     */
+    fun pushLocalDeletions() = preferenceStore.getBoolean("suwayomi_push_local_deletions", false)
+
     fun uploadAutoBackups() = preferenceStore.getBoolean("suwayomi_upload_auto_backups", false)
 
     /** Default for the "also send to the server" box when creating a backup by hand. */
@@ -82,6 +91,12 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
     /** Same idea for category links, as `sourceId|url -> category names`. */
     fun categoryLinksSnapshot() =
         preferenceStore.getString(Preference.appStateKey("suwayomi_category_links_snapshot"), "")
+
+    /** `sourceId|url -> chapter url -> last read (epoch seconds)`: the agreed value of each history entry. */
+    fun historySnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_history_snapshot"), "")
+
+    /** `sourceId|url -> chapter urls` that were downloaded at the end of the last sync. */
+    fun downloadedSnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_downloaded_snapshot"), "")
 
     fun lastSyncAt() = preferenceStore.getLong(Preference.appStateKey("suwayomi_last_sync_at"), 0L)
 

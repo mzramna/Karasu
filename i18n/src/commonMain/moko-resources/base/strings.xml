@@ -1013,8 +1013,12 @@
     <string name="suwayomi_sync_progress_summary">Read chapters and the page you stopped on. Only moves forward.</string>
     <string name="suwayomi_sync_merged">Merged sources</string>
     <string name="suwayomi_sync_merged_summary">Extra sources of a manga and their order</string>
+    <string name="suwayomi_sync_history">History</string>
+    <string name="suwayomi_sync_history_summary">When each chapter was read, and removing a chapter from the history, on both sides</string>
     <string name="suwayomi_apply_deletions">Apply deletions made on the server</string>
     <string name="suwayomi_apply_deletions_summary">Chapters deleted from the server are also removed from this device\'s downloads</string>
+    <string name="suwayomi_push_local_deletions">Share deletions made on this device</string>
+    <string name="suwayomi_push_local_deletions_summary">Downloaded chapters you delete here are also removed from the server\'s other devices. The server\'s own copy is kept</string>
     <string name="suwayomi_downloads">Downloads</string>
     <string name="suwayomi_prefer_server_download">Prefer downloading from the server</string>
     <string name="suwayomi_prefer_server_download_summary">If the server already has a chapter, copy it from there instead of the source. Falls back to the source otherwise. Always on when the server is set to download for everyone.</string>

@@ -56,7 +56,7 @@ internal object ServerGraphQl {
               sourceId
               url
               categories { nodes { id } }
-              chapters { nodes { id url isRead lastPageRead } }
+              chapters { nodes { id url isRead lastPageRead lastReadAt } }
             }
             pageInfo { hasNextPage }
           }
@@ -93,6 +93,8 @@ data class RemoteChapter(
     val url: String,
     val isRead: Boolean = false,
     val lastPageRead: Int = 0,
+    /** When the chapter was last read, in epoch seconds; 0 when it is not in the history. */
+    val lastReadAt: Long = 0,
 )
 
 /** A manga of the server's library, identified for matching by [sourceId] + [url], never by [id]. */

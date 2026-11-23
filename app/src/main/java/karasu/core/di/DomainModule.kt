@@ -103,7 +103,11 @@ fun domainModule() = module {
     single { ServerSyncApi.create(get(), get(), get()) }
     single { ServerChapterDownloader(get(), get()) }
     single { ServerBackupTransfer(get<Application>(), get()) }
-    factory { SyncSuwayomiServer(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+    factory {
+        SyncSuwayomiServer(
+            get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
+        )
+    }
 
     single<CategoryRepository> { CategoryRepositoryImpl(get()) }
     factory { ApplyCategoryRules(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }

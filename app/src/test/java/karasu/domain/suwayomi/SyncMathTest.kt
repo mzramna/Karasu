@@ -91,4 +91,28 @@ class SyncMathTest {
         assertEquals(listOf("10", "20"), entries.map { it.sourceId })
         assertFalse(entries.first().updatesEnabled)
     }
+
+    @Test
+    fun `history - a change on one side travels, including a removal`() {
+        // read here at 100, nothing on the server, agreed 0: push
+        assertEquals(SyncMath.HistoryOutcome(100, changeLocal = false, changeRemote = true), SyncMath.mergeHistory(0, 100, 0))
+        // read on the server at 100, nothing here: pull
+        assertEquals(SyncMath.HistoryOutcome(100, changeLocal = true, changeRemote = false), SyncMath.mergeHistory(0, 0, 100))
+        // removed here (agreed 100, now 0), unchanged on the server: the removal is pushed
+        assertEquals(SyncMath.HistoryOutcome(0, changeLocal = false, changeRemote = true), SyncMath.mergeHistory(100, 0, 100))
+        // removed on the server, unchanged here: the removal is pulled
+        assertEquals(SyncMath.HistoryOutcome(0, changeLocal = true, changeRemote = false), SyncMath.mergeHistory(100, 100, 0))
+        // already equal: nothing to do
+        assertEquals(SyncMath.HistoryOutcome(100, changeLocal = false, changeRemote = false), SyncMath.mergeHistory(50, 100, 100))
+    }
+
+    @Test
+    fun `history - when both sides moved the newer read wins and a removal never beats a read`() {
+        assertEquals(SyncMath.HistoryOutcome(300, changeLocal = true, changeRemote = false), SyncMath.mergeHistory(100, 200, 300))
+        assertEquals(SyncMath.HistoryOutcome(300, changeLocal = false, changeRemote = true), SyncMath.mergeHistory(100, 300, 200))
+        // removed here, read again on the server since: it stays in the history
+        assertEquals(SyncMath.HistoryOutcome(300, changeLocal = true, changeRemote = false), SyncMath.mergeHistory(100, 0, 300))
+        // removed on the server, read again here since
+        assertEquals(SyncMath.HistoryOutcome(300, changeLocal = false, changeRemote = true), SyncMath.mergeHistory(100, 300, 0))
+    }
 }

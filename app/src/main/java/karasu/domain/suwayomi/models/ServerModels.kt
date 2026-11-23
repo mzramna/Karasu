@@ -139,6 +139,16 @@ data class DeletionRequest(val chapterIds: List<Long>, val deleteFromServer: Boo
 @Serializable
 data class DeletionQueued(val queued: Int = 0)
 
+/** A chapter's place in the history; [lastReadAt] is epoch seconds and 0 takes it out of the history. */
+@Serializable
+data class HistoryEntry(val chapterId: Long, val lastReadAt: Long)
+
+@Serializable
+data class HistoryBody(val entries: List<HistoryEntry>)
+
+@Serializable
+data class HistoryUpdated(val updated: Int = 0)
+
 /** A "tombstone": the server recording that a chapter was deleted, and how to find it elsewhere. */
 @Serializable
 data class DeletionEntry(

@@ -16,6 +16,8 @@ import karasu.domain.category.interactor.SetMangaCategories
 import karasu.domain.chapter.interactor.GetChapter
 import karasu.domain.chapter.interactor.UpdateChapter
 import karasu.domain.chapter.models.ChapterUpdate
+import karasu.domain.history.interactor.GetHistory
+import karasu.domain.history.interactor.UpsertHistory
 import karasu.domain.manga.interactor.GetManga
 import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSources
@@ -25,6 +27,7 @@ import karasu.domain.suwayomi.SyncMath.MergedEntry
 import karasu.domain.suwayomi.SyncMath.Progress
 import karasu.domain.suwayomi.SyncMath.toEntries
 import karasu.domain.suwayomi.models.DownloadPolicy
+import karasu.domain.suwayomi.models.HistoryEntry
 import karasu.domain.suwayomi.models.MangaRef
 import karasu.domain.suwayomi.models.MergedSource
 import kotlinx.coroutines.CancellationException
@@ -42,8 +45,10 @@ import kotlinx.serialization.json.Json
  *  1. The download policy, which doubles as the first request — if nothing answers there is no
  *     point walking the library, so [java.io.IOException] ends the run for a retry.
  *  2. Remote deletions, so a chapter the server was told to drop is not uploaded back as "read".
- *  3. Merged sources, which are small and independent of the library walk.
- *  4. Categories and reading progress, in one pass over the server's library.
+ *  3. Local deletions, which have to come after 2 so what was just removed because the server said
+ *     so is not announced again as if it were this device's own doing.
+ *  4. Merged sources, which are small and independent of the library walk.
+ *  5. Categories, reading progress and history, in one pass over the server's library.
  *
  * Works are matched by `(source, url)` on both sides, never by id. A failure of one part that the
  * server *answered* (an error status, a GraphQL error) is recorded and the next part still runs;
@@ -62,6 +67,8 @@ class SyncSuwayomiServer(
     private val mergedRepository: MergedMangaRepository,
     private val downloadManager: DownloadManager,
     private val sourceManager: SourceManager,
+    private val getHistory: GetHistory,
+    private val upsertHistory: UpsertHistory,
 ) {
 
     data class Summary(
@@ -74,12 +81,16 @@ class SyncSuwayomiServer(
         val mergedPulled: Int = 0,
         val mergedPushed: Int = 0,
         val deletionsApplied: Int = 0,
+        val deletionsPushed: Int = 0,
+        val historyPulled: Int = 0,
+        val historyPushed: Int = 0,
         /** Parts the server answered with an error. Reaching the server at all is a thrown exception. */
         val errors: List<String> = emptyList(),
     ) {
         val isIdle: Boolean
             get() = categoriesCreatedLocal + categoriesCreatedRemote + categoryLinksLocal + categoryLinksRemote +
-                chaptersPulled + chaptersPushed + mergedPulled + mergedPushed + deletionsApplied == 0
+                chaptersPulled + chaptersPushed + mergedPulled + mergedPushed + deletionsApplied + deletionsPushed +
+                historyPulled + historyPushed == 0
     }
 
     private var summary = Summary()
@@ -87,11 +98,13 @@ class SyncSuwayomiServer(
     suspend fun await(): Summary {
         if (!api.isEnabled) return Summary()
         summary = Summary()
+        removedBecauseOfServer.clear()
 
         part("policy") { refreshPolicy() }
         if (preferences.applyRemoteDeletions().get()) part("deletions") { applyDeletions() }
+        if (preferences.pushLocalDeletions().get()) part("local deletions") { pushLocalDeletions() }
         if (preferences.syncMergedSources().get()) part("merged sources") { syncMerged() }
-        if (preferences.syncCategories().get() || preferences.syncProgress().get()) {
+        if (preferences.syncCategories().get() || preferences.syncProgress().get() || preferences.syncHistory().get()) {
             part("library") { syncLibrary() }
         }
         return summary
@@ -130,7 +143,7 @@ class SyncSuwayomiServer(
      * device that has just been set up would delete downloads the user has today because of
      * something they did last year.
      */
-    private suspend fun applyDeletions() {
+    private suspend fun applyDeletions(skip: Set<String> = emptySet()) {
         val cursor = preferences.lastDeletionId().get()
         val entries = api.deletions(if (cursor < 0) 0 else cursor).sortedBy { it.id }
         if (entries.isEmpty()) {
@@ -139,11 +152,23 @@ class SyncSuwayomiServer(
         }
         if (cursor >= 0) {
             var applied = 0
-            entries.forEach { if (deleteLocally(it.sourceId, it.mangaUrl, it.chapterUrl)) applied++ }
-            summary = summary.copy(deletionsApplied = applied)
+            entries.forEach {
+                val key = chapterKey(SyncMath.mangaKey(it.sourceId, it.mangaUrl), it.chapterUrl)
+                if (key in skip) return@forEach
+                if (deleteLocally(it.sourceId, it.mangaUrl, it.chapterUrl)) {
+                    applied++
+                    removedBecauseOfServer += key
+                }
+            }
+            summary = summary.copy(deletionsApplied = summary.deletionsApplied + applied)
         }
         preferences.lastDeletionId().set(entries.maxOf { it.id })
     }
+
+    /** Chapters this run deleted because the server said so; they are not this device's own deletions. */
+    private val removedBecauseOfServer = mutableSetOf<String>()
+
+    private fun chapterKey(mangaKey: String, chapterUrl: String) = "$mangaKey|$chapterUrl"
 
     private suspend fun deleteLocally(sourceId: String, mangaUrl: String, chapterUrl: String): Boolean {
         val source = SyncMath.parseSourceId(sourceId) ?: return false
@@ -153,6 +178,70 @@ class SyncSuwayomiServer(
         if (!downloadManager.isChapterDownloaded(chapter, manga, skipCache = true)) return false
         downloadManager.deleteChapters(listOf(chapter), manga, sourceManager.getOrStub(manga.source), force = true)
         return true
+    }
+
+    /**
+     * Tells the server about chapters that were downloaded at the end of the last sync and are not
+     * now, so the other devices drop them too.
+     *
+     * The first run only records what is downloaded: without a previous picture there is no way to
+     * tell "deleted" from "never downloaded". Chapters this very run deleted because of the server
+     * are left out (announcing them again would bounce one deletion between devices forever), and
+     * so are the tombstones this device just created when it reads the log back — otherwise a
+     * chapter downloaded again later would be deleted by its own old announcement.
+     */
+    private suspend fun pushLocalDeletions() {
+        val current = downloadedNow()
+        val raw = preferences.downloadedSnapshot().get()
+        val previous = if (raw.isBlank()) null else decode(raw) { text ->
+            json.decodeFromString(linkSnapshotSerializer, text).mapValues { (_, v) -> v.toSet() }
+        }
+        saveDownloadedSnapshot(current)
+        if (previous == null) return
+
+        val gone = mutableListOf<Triple<String, String, String>>() // source, manga url, chapter url
+        val byKey = getManga.awaitFavorites().associateBy { SyncMath.mangaKey(it.source, it.url) }
+        for ((mangaKey, urls) in previous) {
+            val manga = byKey[mangaKey] ?: continue // left the library: not a deletion
+            val still = current[mangaKey].orEmpty()
+            urls.filter { it !in still && chapterKey(mangaKey, it) !in removedBecauseOfServer }
+                .forEach { gone += Triple(manga.source.toString(), manga.url, it) }
+        }
+        if (gone.isEmpty()) return
+
+        val ids = gone.mapNotNull { (source, mangaUrl, chapterUrl) ->
+            SyncMath.parseSourceId(source)?.let { api.lookupChapter(it, mangaUrl, chapterUrl)?.chapterId }
+        }
+        if (ids.isEmpty()) return
+        api.requestDeletions(ids, deleteFromServer = false)
+        summary = summary.copy(deletionsPushed = ids.size)
+
+        // Read our own announcements back so the cursor moves past them without applying them here.
+        if (preferences.applyRemoteDeletions().get()) {
+            applyDeletions(skip = gone.mapTo(mutableSetOf()) { (source, mangaUrl, chapterUrl) ->
+                chapterKey(SyncMath.mangaKey(source, mangaUrl), chapterUrl)
+            })
+        }
+    }
+
+    /** `mangaKey -> urls of the chapters that are downloaded now`, for the library only. */
+    private suspend fun downloadedNow(): Map<String, Set<String>> {
+        val result = mutableMapOf<String, Set<String>>()
+        for (manga in getManga.awaitFavorites()) {
+            val mangaId = manga.id ?: continue
+            val urls = getChapter.awaitAllRaw(mangaId, false)
+                .filter { downloadManager.isChapterDownloaded(it, manga) }
+                .mapTo(mutableSetOf()) { it.url }
+            if (urls.isNotEmpty()) result[SyncMath.mangaKey(manga.source, manga.url)] = urls
+        }
+        return result
+    }
+
+    private fun saveDownloadedSnapshot(snapshot: Map<String, Set<String>>) {
+        // "{}" and not "": an empty picture is still a picture, and "no picture yet" is the blank.
+        preferences.downloadedSnapshot().set(
+            json.encodeToString(linkSnapshotSerializer, snapshot.mapValues { (_, v) -> v.sorted() }),
+        )
     }
 
     // endregion
@@ -265,12 +354,17 @@ class SyncSuwayomiServer(
     private suspend fun syncLibrary() {
         val categories = if (preferences.syncCategories().get()) reconcileCategoryNames() else null
         val progress = preferences.syncProgress().get()
+        var history = preferences.syncHistory().get()
 
         val local = getManga.awaitFavorites().filter { it.id != null }
             .associateBy { SyncMath.mangaKey(it.source, it.url) }
         val linkSnapshot = loadLinkSnapshot()
         val newLinkSnapshot = mutableMapOf<String, Set<String>>()
+        val historySnapshot = loadHistorySnapshot()
+        val newHistorySnapshot = mutableMapOf<String, Map<String, Long>>()
 
+        var historyPulled = 0
+        var historyPushed = 0
         var linksLocal = 0
         var linksRemote = 0
         var pulled = 0
@@ -278,6 +372,7 @@ class SyncSuwayomiServer(
 
         api.forEachLibraryPage { page ->
             val remotePatches = mutableListOf<ServerSyncApi.ChapterPatch>()
+            val historyPuts = mutableListOf<HistoryEntry>()
             for (remote in page) {
                 val key = SyncMath.mangaKey(remote.sourceId, remote.url)
                 val manga = local[key] ?: continue
@@ -292,12 +387,35 @@ class SyncSuwayomiServer(
                     pulled += p
                     pushed += q
                 }
+                if (history) {
+                    val patched = remotePatches.mapTo(mutableSetOf()) { it.chapterId }
+                    val (l, r, agreed) = reconcileHistory(manga, remote, historySnapshot[key].orEmpty(), patched, historyPuts)
+                    historyPulled += l
+                    historyPushed += r
+                    if (agreed.isNotEmpty()) newHistorySnapshot[key] = agreed
+                }
             }
             if (remotePatches.isNotEmpty()) api.updateChapters(remotePatches)
+            // After the patches: changing the page read makes the server stamp the chapter with
+            // "now", and the history entry has to be written over that, not under it.
+            if (history && historyPuts.isNotEmpty()) {
+                try {
+                    api.putHistory(historyPuts)
+                } catch (e: ServerApiException) {
+                    // A server from before the history existed answers "no such route". The rest of
+                    // the library (categories, progress) is not its fault and must still be done.
+                    if (e.code != 404 && e.code != 405) throw e
+                    history = false
+                    summary = summary.copy(errors = summary.errors + "history: the server is too old to share it")
+                }
+            }
         }
 
         if (categories != null) saveLinkSnapshot(newLinkSnapshot)
+        if (history) saveHistorySnapshot(newHistorySnapshot)
         summary = summary.copy(
+            historyPulled = historyPulled,
+            historyPushed = historyPushed,
             categoryLinksLocal = linksLocal,
             categoryLinksRemote = linksRemote,
             chaptersPulled = pulled,
@@ -425,6 +543,58 @@ class SyncSuwayomiServer(
         return updates.size to queued
     }
 
+    /**
+     * Merges "when was this chapter last read" chapter by chapter (see [SyncMath.mergeHistory]).
+     * Local changes are applied at once; server changes are queued in [puts] so a page goes out as
+     * one request. A chapter whose read state is being patched is always written, because the patch
+     * itself stamps it with the current time on the server.
+     * @return entries changed locally, entries queued for the server, and the agreed values to remember.
+     */
+    private suspend fun reconcileHistory(
+        manga: Manga,
+        remote: RemoteManga,
+        base: Map<String, Long>,
+        patchedRemoteIds: Set<Int>,
+        puts: MutableList<HistoryEntry>,
+    ): Triple<Int, Int, Map<String, Long>> {
+        val mangaId = manga.id!!
+        val remoteByUrl = remote.chapters.associateBy { it.url }
+        if (remoteByUrl.isEmpty()) return Triple(0, 0, emptyMap())
+
+        val lastReadByChapterId = getHistory.awaitAllByMangaId(mangaId).associate { it.chapter_id to it.last_read }
+        val agreed = mutableMapOf<String, Long>()
+        var pulled = 0
+        var pushed = 0
+        for (chapter in getChapter.awaitAllRaw(mangaId, false)) {
+            val remoteChapter = remoteByUrl[chapter.url] ?: continue
+            val chapterId = chapter.id ?: continue
+            val local = (lastReadByChapterId[chapterId] ?: 0L) / MILLIS
+            val outcome = SyncMath.mergeHistory(base[chapter.url] ?: 0L, local, remoteChapter.lastReadAt)
+
+            if (outcome.changeLocal) {
+                // Nothing to write when removing a chapter that is not in the history here.
+                if (outcome.result > 0 || local > 0) upsertHistory.await(chapterId, outcome.result * MILLIS, 0L)
+                pulled++
+            }
+            if (outcome.changeRemote || remoteChapter.id in patchedRemoteIds) {
+                puts += HistoryEntry(remoteChapter.id.toLong(), outcome.result)
+                if (outcome.changeRemote) pushed++
+            }
+            if (outcome.result > 0) agreed[chapter.url] = outcome.result
+        }
+        return Triple(pulled, pushed, agreed)
+    }
+
+    private val historySnapshotSerializer =
+        MapSerializer(String.serializer(), MapSerializer(String.serializer(), Long.serializer()))
+
+    private fun loadHistorySnapshot(): Map<String, Map<String, Long>> =
+        decode(preferences.historySnapshot().get()) { json.decodeFromString(historySnapshotSerializer, it) }
+
+    private fun saveHistorySnapshot(snapshot: Map<String, Map<String, Long>>) {
+        preferences.historySnapshot().set(json.encodeToString(historySnapshotSerializer, snapshot))
+    }
+
     private fun RemoteChapter.toProgress() = Progress(isRead, lastPageRead)
 
     private fun loadLinkSnapshot(): Map<String, Set<String>> = decode(preferences.categoryLinksSnapshot().get()) {
@@ -456,5 +626,8 @@ class SyncSuwayomiServer(
 
     private companion object {
         val json = Json { ignoreUnknownKeys = true }
+
+        /** Karasu keeps history times in milliseconds, the server in seconds. */
+        const val MILLIS = 1000L
     }
 }

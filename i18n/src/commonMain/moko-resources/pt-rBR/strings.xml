@@ -182,8 +182,12 @@
     <string name="suwayomi_sync_progress_summary">Capítulos lidos e a página em que você parou. Só avança.</string>
     <string name="suwayomi_sync_merged">Fontes mescladas</string>
     <string name="suwayomi_sync_merged_summary">Fontes extras de um mangá e a ordem delas</string>
+    <string name="suwayomi_sync_history">Histórico</string>
+    <string name="suwayomi_sync_history_summary">Quando cada capítulo foi lido e a remoção de um capítulo do histórico, nos dois sentidos</string>
     <string name="suwayomi_apply_deletions">Aplicar exclusões feitas no servidor</string>
     <string name="suwayomi_apply_deletions_summary">Capítulos excluídos do servidor também saem dos downloads deste aparelho</string>
+    <string name="suwayomi_push_local_deletions">Compartilhar exclusões feitas neste aparelho</string>
+    <string name="suwayomi_push_local_deletions_summary">Capítulos baixados que você apaga aqui também saem dos outros aparelhos do servidor. A cópia do próprio servidor é mantida</string>
     <string name="suwayomi_downloads">Downloads</string>
     <string name="suwayomi_prefer_server_download">Preferir baixar do servidor</string>
     <string name="suwayomi_prefer_server_download_summary">Se o servidor já tem o capítulo, copia de lá em vez da fonte. Se não tiver, baixa da fonte. Sempre ativo quando o servidor está configurado para baixar para todos.</string>

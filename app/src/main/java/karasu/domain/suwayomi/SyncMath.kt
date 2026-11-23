@@ -83,6 +83,26 @@ object SyncMath {
     }
 
     /** A source id is a Long locally and a string on the wire; null when the string is not one. */
+    data class HistoryOutcome(val result: Long, val changeLocal: Boolean, val changeRemote: Boolean)
+
+    /**
+     * Three-way merge of when a chapter was last read (epoch seconds, 0 = not in the history).
+     *
+     * One side moving away from [base] while the other stays wins, which is what lets "removed from
+     * the history" travel (0 is a value like any other). When both moved, the newer read wins and a
+     * removal never beats a read: a chapter read again after being removed on the other side should
+     * be in the history.
+     */
+    fun mergeHistory(base: Long, local: Long, remote: Long): HistoryOutcome {
+        if (local == remote) return HistoryOutcome(local, changeLocal = false, changeRemote = false)
+        val result = when {
+            local != base && remote == base -> local
+            remote != base && local == base -> remote
+            else -> maxOf(local, remote)
+        }
+        return HistoryOutcome(result, changeLocal = result != local, changeRemote = result != remote)
+    }
+
     fun parseSourceId(raw: String): Long? = raw.trim().toLongOrNull()
 
     /** The key a manga is matched by on both sides. Never an id: those are different on each side. */

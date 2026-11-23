@@ -119,6 +119,11 @@ class SettingsSyncController : SettingsLegacyController() {
                 summaryRes = MR.strings.suwayomi_sync_progress_summary
             }
             switchPreference {
+                bindTo(serverPreferences.syncHistory())
+                titleRes = MR.strings.suwayomi_sync_history
+                summaryRes = MR.strings.suwayomi_sync_history_summary
+            }
+            switchPreference {
                 bindTo(serverPreferences.syncMergedSources())
                 titleRes = MR.strings.suwayomi_sync_merged
                 summaryRes = MR.strings.suwayomi_sync_merged_summary
@@ -127,6 +132,11 @@ class SettingsSyncController : SettingsLegacyController() {
                 bindTo(serverPreferences.applyRemoteDeletions())
                 titleRes = MR.strings.suwayomi_apply_deletions
                 summaryRes = MR.strings.suwayomi_apply_deletions_summary
+            }
+            switchPreference {
+                bindTo(serverPreferences.pushLocalDeletions())
+                titleRes = MR.strings.suwayomi_push_local_deletions
+                summaryRes = MR.strings.suwayomi_push_local_deletions_summary
             }
         }
 

@@ -25,6 +25,9 @@ import karasu.domain.suwayomi.models.DeletionEntry
 import karasu.domain.suwayomi.models.DeletionQueued
 import karasu.domain.suwayomi.models.DeletionRequest
 import karasu.domain.suwayomi.models.DownloadPolicy
+import karasu.domain.suwayomi.models.HistoryBody
+import karasu.domain.suwayomi.models.HistoryEntry
+import karasu.domain.suwayomi.models.HistoryUpdated
 import karasu.domain.suwayomi.models.MangaLookup
 import karasu.domain.suwayomi.models.MangaRef
 import karasu.domain.suwayomi.models.MergedGroup
@@ -251,6 +254,20 @@ class ServerSyncApi(
             Request.Builder().url(base.endpoint("deletions")).post(body.toRequestBody(JSON_MEDIA)).build()
         }
         return answer.response.use { it.decode<DeletionQueued>().queued }
+    }
+
+    /**
+     * Sets when chapters were last read, which is what puts them in the server's history; 0 removes
+     * a chapter from it. The only way to write that value, since the GraphQL API only ever sets it
+     * to "now" as a side effect of changing the page read.
+     */
+    suspend fun putHistory(entries: List<HistoryEntry>): Int {
+        if (entries.isEmpty()) return 0
+        val body = json.encodeToString(HistoryBody.serializer(), HistoryBody(entries))
+        val answer = transport.execute { base ->
+            Request.Builder().url(base.endpoint("history")).put(body.toRequestBody(JSON_MEDIA)).build()
+        }
+        return answer.response.use { it.decode<HistoryUpdated>().updated }
     }
 
     /** Tombstones with an id greater than [afterId], oldest first. */

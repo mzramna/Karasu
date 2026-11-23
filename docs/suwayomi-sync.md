@@ -122,3 +122,33 @@ Secrets: usa os mesmos do `build_push.yml` (`SIGNING_KEY`, `ALIAS`, `KEY_STORE_P
 `KEY_PASSWORD`). Sem eles, o build roda mas os APKs ficam só como artefato do workflow, sem Release.
 Opcional: `SYNC_PAT` (token com escopos `repo` e `workflow`), necessário apenas se o upstream alterar
 arquivos em `.github/workflows`, que o `GITHUB_TOKEN` não pode enviar.
+
+## Histórico e exclusões (nos dois sentidos)
+
+* **Histórico.** "Quando cada capítulo foi lido" sincroniza por capítulo, comparando com o último valor combinado
+  (merge de 3 vias). Remover um capítulo do histórico no app remove no servidor, e vice-versa; se um lado remove e o
+  outro leu de novo, a leitura vence. O app guarda milissegundos e o servidor segundos. O servidor só consegue gravar
+  esse valor pelo `PUT /api/v1/karasu/history` do fork (o GraphQL só grava "agora" ao mudar a página lida). Com um
+  servidor sem essa rota o histórico é pulado e o resto da biblioteca sincroniza normalmente.
+* **Exclusões do servidor → app.** Capítulo apagado pela WebUI com "Deletar também dos dispositivos Karasu" é apagado
+  do aparelho. A primeira sincronização só aprende onde o log termina, para não reaplicar um histórico antigo.
+* **Exclusões do app → servidor.** Opcional (*Compartilhar exclusões feitas neste aparelho*, desligado por padrão):
+  capítulo baixado que você apaga aqui é anunciado ao servidor e os outros aparelhos o apagam. A cópia do servidor é
+  mantida. Um aparelho que apagou por ordem do servidor não anuncia de volta, e um capítulo baixado de novo depois
+  não é apagado pelo próprio anúncio antigo.
+
+## Testes ao vivo (app ↔ servidor, H2 e PostgreSQL)
+
+`SyncLiveBidirectionalTest` e `ServerSyncApiLiveTest` rodam o app de verdade (o `SyncSuwayomiServer` real, sobre um
+banco local em memória) contra um servidor de verdade, mudando um lado e conferindo o outro. Cobrem categorias
+(criar, mover, remover, apagar), progresso, histórico (incluindo remover), fontes mescladas (adicionar, remover,
+reserva, ordem), downloads e exclusões, backups entre dois aparelhos, política e a convergência de dois aparelhos.
+
+```bash
+SERVER_JAR=/caminho/Suwayomi-Server-vX.jar scripts/live-sync-test.sh h2
+SERVER_JAR=... PGHOST=localhost PGUSER=postgres PGPASSWORD=... scripts/live-sync-test.sh postgres
+```
+
+O script sobe o servidor, cria o esquema, semeia obras e CBZs (`scripts/live/seed.py`) e roda os testes. Sem
+`KARASU_LIVE_URL` eles são ignorados, então `./gradlew testStandardDebugUnitTest` continua sem precisar de servidor.
+No GitHub, o workflow `CI Integration` faz isso em H2 e em PostgreSQL.
