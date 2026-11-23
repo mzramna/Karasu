@@ -86,11 +86,20 @@ class ServerSyncApi(
 
     suspend fun health(): HealthResult {
         val started = System.nanoTime()
-        val answer = transport.execute { get(it, "health") }
-        val elapsed = (System.nanoTime() - started) / 1_000_000
-        answer.response.use { response ->
-            val health = response.decode<ServerHealth>()
-            return HealthResult(health, elapsed, answer.origin, answer.base.toString())
+        try {
+            val answer = transport.execute { get(it, "health") }
+            val elapsed = (System.nanoTime() - started) / 1_000_000
+            answer.response.use { response ->
+                val health = response.decode<ServerHealth>()
+                return HealthResult(health, elapsed, answer.origin, answer.base.toString())
+            }
+        } catch (e: ServerApiException) {
+            // Suwayomi answers 404 (not 401) to a request with bad credentials, and an upstream
+            // server without the Karasu routes answers 404 too: say both, or the user hunts the wrong one.
+            if (e.code in AUTH_OR_MISSING) {
+                throw ServerApiException(e.code, "${e.message} - check the username and password, and that the server is the Karasu-compatible Suwayomi-Server")
+            }
+            throw e
         }
     }
 
@@ -379,6 +388,8 @@ class ServerSyncApi(
     }
 
     companion object {
+        private val AUTH_OR_MISSING = setOf(401, 403, 404)
+
         /** Wires the transport to the user's settings and the app's shared HTTP client. */
         fun create(
             preferences: ServerPreferences,

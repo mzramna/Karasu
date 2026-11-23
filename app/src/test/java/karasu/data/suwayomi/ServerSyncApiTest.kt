@@ -225,4 +225,14 @@ class ServerSyncApiTest {
             assertTrue(request.body.contains("abc"))
         }
     }
+
+    @Test
+    fun `a 404 on health names both likely causes, wrong credentials and a server without the fork`() = runBlocking {
+        FakeServer { reply("""{"error":"nope"}""", 404) }.use { server ->
+            val error = assertThrows(ServerApiException::class.java) { runBlocking { api(server).health() } }
+            assertEquals(404, error.code)
+            assertTrue(error.message!!.contains("username and password"))
+            assertTrue(error.message!!.contains("Karasu-compatible"))
+        }
+    }
 }
