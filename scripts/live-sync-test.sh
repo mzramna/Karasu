@@ -18,6 +18,9 @@ USER_NAME=karasu
 USER_PASS=s3cret
 SERVER_PID=""
 P=suwayomi.tachidesk.config.server
+# run a copy under another name: other scripts clean up with `pkill -f Suwayomi-Server` and must not hit this one
+APP_JAR="$ROOT/app.jar"
+cp "$SERVER_JAR" "$APP_JAR"
 
 DB_ARGS=()
 case "$DB" in
@@ -43,7 +46,7 @@ start_server() {
   java "-D$P.rootDir=$ROOT" "-D$P.port=$PORT" "-D$P.ip=127.0.0.1" "-D$P.webUIEnabled=false" \
        "-D$P.initialOpenInBrowserEnabled=false" "-D$P.systemTrayEnabled=false" "-D$P.downloadAsCbz=true" \
        "-D$P.authMode=BASIC_AUTH" "-D$P.authUsername=$USER_NAME" "-D$P.authPassword=$USER_PASS" \
-       "${DB_ARGS[@]}" -Xmx1g -jar "$SERVER_JAR" > "$ROOT/server.log" 2>&1 &
+       "${DB_ARGS[@]}" -Xmx1g -jar "$APP_JAR" > "$ROOT/server.log" 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 120); do
     curl -fsS -u "$USER_NAME:$USER_PASS" "http://127.0.0.1:$PORT/api/v1/karasu/health" >/dev/null 2>&1 && return 0

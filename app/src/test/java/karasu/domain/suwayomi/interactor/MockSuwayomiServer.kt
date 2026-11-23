@@ -500,7 +500,12 @@ class MockSuwayomiServer(
             val (manga, chapter) = findChapter(id) ?: continue
             tombstones += Tombstone(nextTombstone++, manga.sourceId, manga.url, chapter.url, (manga.chapters.indexOf(chapter) + 1).toFloat(), clock())
             if (deleteFromServer) chapter.downloaded = false
-            record(device, "DELETION", "deletion:${mangaKey(manga)}|${chapter.url}", "SET", buildJsonObject { put("deleteFromServer", deleteFromServer) })
+            // asking again for the same thing is not a new fact
+            val key = "deletion:${mangaKey(manga)}|${chapter.url}"
+            val last = operations.lastOrNull { it.json["key"]!!.jsonPrimitive.content == key }
+            if (last?.json?.get("value")?.jsonObject?.get("deleteFromServer")?.jsonPrimitive?.booleanOrNull != deleteFromServer) {
+                record(device, "DELETION", key, "SET", buildJsonObject { put("deleteFromServer", deleteFromServer) })
+            }
             queued++
         }
         return reply(200, buildJsonObject { put("queued", queued) })
@@ -593,9 +598,8 @@ class MockSuwayomiServer(
 
     private fun deleteCategory(id: Int, device: String): JsonObject {
         categories.removeAll { it.id == id }
-        mangas.forEach { m ->
-            if (m.categoryIds.remove(id)) record(device, "CATEGORY_LINK", "link:${mangaKey(m)}|$id", "REMOVE", null)
-        }
+        // the real server logs only the category going away, not each link it took with it
+        mangas.forEach { it.categoryIds.remove(id) }
         record(device, "CATEGORY", "category:$id", "REMOVE", null)
         return buildJsonObject { putJsonObject("deleteCategory") { putJsonObject("category") { put("id", id) } } }
     }

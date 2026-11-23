@@ -160,3 +160,39 @@ SERVER_JAR=... PGHOST=localhost PGUSER=postgres PGPASSWORD=... scripts/live-sync
 O script sobe o servidor, cria o esquema, semeia obras e CBZs (`scripts/live/seed.py`) e roda os testes. Sem
 `KARASU_LIVE_URL` eles são ignorados, então `./gradlew testStandardDebugUnitTest` continua sem precisar de servidor.
 No GitHub, o workflow `CI Integration` faz isso em H2 e em PostgreSQL.
+
+## Log de operações e conflitos decididos pelo horário
+
+Cada ação do usuário que a sincronização acompanha (progresso, histórico, categorias, vínculos obra↔categoria, fontes
+mescladas) é registrada no app com o **horário em que foi feita** (`OperationLog`, gravado pelos próprios interactors).
+A sincronização publica esse log no servidor (`POST /api/v1/karasu/operations`, com o relógio corrigido pela hora do
+servidor, e `X-Karasu-Device` identificando o aparelho) e lê o log do servidor, onde a WebUI e os outros aparelhos
+registram o que fizeram. O estado continua sendo comparado com o último combinado; o log só decide os **conflitos
+reais** (os dois lados mudaram a mesma coisa): **vale a operação mais recente**, empate para o servidor. O que a própria
+sincronização grava não é registrado como ação do usuário. Sem registro de um lado, ou com um servidor sem log, valem
+as regras anteriores.
+
+## Renomear categoria
+
+O app lembra qual categoria local é qual categoria do servidor e o nome combinado. Renomeou num lado: o outro
+acompanha, sem criar uma segunda categoria. Renomeou nos dois: vale o nome da operação mais recente.
+
+## Três níveis de teste
+
+| Nível | O que roda | Onde |
+| --- | --- | --- |
+| **Mock** (rápido) | `SyncLiveBidirectionalTest`, `ServerSyncApiLiveTest`, `SyncOldServerTest` contra o `MockSuwayomiServer`, um servidor em memória (REST + GraphQL, com as manhas do real) dentro da JVM de teste | `CI Test`, a cada build |
+| **Servidor real** | os mesmos cenários contra um Suwayomi-Server de verdade, em H2 e PostgreSQL (`KARASU_LIVE_URL`, `scripts/live-sync-test.sh`) | `CI Integration`; é o que mantém o mock honesto |
+| **Pilha completa** | `FullStackTest`: servidor real + **WebUI real clicada no Chromium** + código de sincronização do app, em H2 e PostgreSQL | `scripts/full-stack/run.sh`, **fora das pipelines** |
+
+```bash
+SERVER_JAR=/caminho/Suwayomi-Server-vX.jar WEBUI_DIR=/caminho/Suwayomi-WebUI/build \
+  scripts/full-stack/run.sh h2          # ou: postgres  (PGHOST/PGUSER/PGPASSWORD)
+```
+
+Precisa de Java 21 (servidor), do JDK e do Android SDK do app, de `python3`, e de `node` com o módulo `playwright`
+(`WEBUI_REPO=/caminho/Suwayomi-WebUI` expõe o `node_modules`; `CHROMIUM=/caminho` se o navegador não for o padrão).
+`ONLY_STACK=1` sobe a pilha sem testes (para desenvolver o driver); `KEEP_UP=1` a deixa de pé. O driver do navegador é
+`scripts/full-stack/web-driver.mjs` (uma ação por chamada: criar/renomear/apagar categoria, vincular obra, marcar
+lido/não lido, apagar capítulo com o checkbox do Karasu, histórico, fontes mescladas, backups, política).
+**O "app" aqui é o código real de sincronização (interactor + cliente) na JVM, não o APK**: não há emulador Android.
