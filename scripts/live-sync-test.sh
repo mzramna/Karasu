@@ -6,7 +6,7 @@
 #   SERVER_JAR=... PGHOST=localhost PGUSER=postgres PGPASSWORD=x scripts/live-sync-test.sh postgres
 #
 # The server is started once to create its schema, stopped, seeded (scripts/live/seed.py), started again
-# with Basic Auth (work /live/m30 is reserved for ServerSyncApiLiveTest, m01..m29 for the bidirectional tests), and the tests in SyncLiveBidirectionalTest / ServerSyncApiLiveTest run against it.
+# with Basic Auth (work /live/m30 is reserved for ServerSyncApiLiveTest, m01..m40 for the bidirectional tests), and the tests in SyncLiveBidirectionalTest / ServerSyncApiLiveTest run against it.
 set -euo pipefail
 
 DB="${1:-h2}"
@@ -58,7 +58,7 @@ start_server
 stop_server
 
 echo "== [$DB] seeding"
-python3 "$HERE/live/seed.py" "$ROOT" "$ROOT/seed.sql" "${LIVE_WORKS:-30}"
+python3 "$HERE/live/seed.py" "$ROOT" "$ROOT/seed.sql" "${LIVE_WORKS:-40}"
 if [[ "$DB" == postgres ]]; then
   PGOPTIONS='-c search_path=suwayomi' psql -d "$DBNAME" -q -v ON_ERROR_STOP=1 -f "$ROOT/seed.sql"
 else

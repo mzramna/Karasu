@@ -10,9 +10,9 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.io.File
 
@@ -23,13 +23,11 @@ import java.io.File
  * Every test follows the same shape: a [LiveDevice] (the app's side, with the real [SyncSuwayomiServer])
  * and a [Web] (what the WebUI or another client does to the server), change one, sync, look at the other.
  *
- * Skipped unless `KARASU_LIVE_URL` is set; `scripts/live-sync-test.sh` starts a seeded server and sets it.
+ * By default the server is a mock in this JVM ([MockSuwayomiServer]), so this runs on every build; with
+ * `KARASU_LIVE_URL` set it runs against a real server (`scripts/live-sync-test.sh` starts a seeded one).
  * Each test owns one of the seeded works (`/live/mNN`), because the server's state is shared and permanent.
  */
 class SyncLiveBidirectionalTest {
-
-    @BeforeEach
-    fun onlyWithAServer() = assumeTrue(Live.isConfigured, "KARASU_LIVE_URL not set: live server tests skipped")
 
     /** The server as another client sees it: the WebUI, or any app that talks to its GraphQL and REST API. */
     private class Web(val api: ServerSyncApi = Live.api()) {
@@ -53,6 +51,18 @@ class SyncLiveBidirectionalTest {
         fun categoryNames(): Set<String> = runBlocking { api.categories() }.mapTo(mutableSetOf()) { it.name }
 
         fun createCategory(name: String) = runBlocking { api.createCategory(name) }
+
+        fun renameCategory(old: String, new: String) {
+            val id = runBlocking { api.categories() }.first { it.name == old }.id
+            runBlocking { api.renameCategory(id, new) }
+        }
+
+        fun categoryId(name: String): Int? = runBlocking { api.categories() }.firstOrNull { it.name == name }?.id
+
+        /** The server's operation log from [afterSeq], oldest first. */
+        fun operations(afterSeq: Long = 0) = runBlocking { api.operations(afterSeq, 5000) }.operations
+
+        fun lastSeq(): Long = runBlocking { api.operations(0, 5000) }.lastSeq
 
         fun link(n: Int, categoryName: String) {
             val id = runBlocking { api.categories() }.first { it.name == categoryName }.id
@@ -678,6 +688,233 @@ class SyncLiveBidirectionalTest {
         } finally {
             runBlocking { Live.api().setDownloadPolicy(original) }
         }
+    }
+
+
+    // =========================================================================== empty categories and renaming
+
+    @Test
+    fun `an empty category created on the app shows up on the server`() {
+        val app = device("phone")
+        val name = unique("empty-app")
+        app.createCategory(name)
+
+        val summary = app.sync()
+
+        assertTrue(name in server.categoryNames(), "the category exists on the server without any work in it")
+        assertTrue(summary.categoriesCreatedRemote >= 1)
+    }
+
+    @Test
+    fun `an empty category created on the server shows up on the app`() {
+        val app = device("phone")
+        val name = unique("empty-server")
+        server.createCategory(name)
+
+        val summary = app.sync()
+
+        assertTrue(name in app.categoryNames(), "the category exists on the app without any work in it")
+        assertTrue(summary.categoriesCreatedLocal >= 1)
+    }
+
+    @Test
+    fun `renaming a category on the app renames it on the server, it does not make a second one`() {
+        val app = device("phone", 31)
+        val old = unique("before-app")
+        val new = unique("after-app")
+        app.createCategory(old)
+        app.setCategories(31, old)
+        app.sync()
+        val serverId = server.categoryId(old)
+        assertNotNull(serverId)
+
+        app.renameCategory(old, new)
+        val summary = app.sync()
+
+        assertEquals(serverId, server.categoryId(new), "the same server category, now with the new name")
+        assertNull(server.categoryId(old), "and no category left under the old name")
+        assertEquals(setOf(new), server.categoriesOf(31), "the work is still in it")
+        assertEquals(1, app.categoryNames().count { it == new })
+        assertFalse(old in app.categoryNames())
+        assertEquals(1, summary.categoriesRenamedRemote)
+        assertEquals(0, summary.categoriesCreatedRemote, "a rename is not a new category")
+    }
+
+    @Test
+    fun `renaming a category on the server renames it on the app, it does not make a second one`() {
+        val app = device("phone", 32)
+        val old = unique("before-server")
+        val new = unique("after-server")
+        app.createCategory(old)
+        app.setCategories(32, old)
+        app.sync()
+
+        server.renameCategory(old, new)
+        val summary = app.sync()
+
+        assertTrue(new in app.categoryNames(), "renamed on the app")
+        assertFalse(old in app.categoryNames(), "and the old name is gone")
+        assertEquals(setOf(new), app.categoriesOf(32), "the work follows the category")
+        assertEquals(1, summary.categoriesRenamedLocal)
+        assertEquals(0, summary.categoriesCreatedLocal, "a rename is not a new category")
+        assertNull(server.categoryId(old))
+    }
+
+    @Test
+    fun `renamed on both sides, the rename made last is the name`() {
+        // the server did it later: its name wins on both
+        val a = device("phone")
+        val n1 = unique("both1")
+        a.createCategory(n1)
+        a.sync()
+        val appName1 = unique("app-name")
+        val webName1 = unique("web-name")
+        a.at(-600_000) { a.renameCategory(n1, appName1) }
+        server.renameCategory(n1, webName1)
+        a.sync()
+        assertEquals(setOf(webName1), a.categoryNames().filter { it == webName1 || it == appName1 }.toSet(), "the later (server) name wins on the app")
+        assertTrue(server.categoryId(webName1) != null && server.categoryId(appName1) == null, "and stays on the server")
+
+        // the app did it later: its name wins on both
+        val b = device("tablet")
+        val n2 = unique("both2")
+        b.createCategory(n2)
+        b.sync()
+        val appName2 = unique("app-name")
+        val webName2 = unique("web-name")
+        server.renameCategory(n2, webName2)
+        b.at(+600_000) { b.renameCategory(n2, appName2) }
+        b.sync()
+        assertTrue(server.categoryId(appName2) != null && server.categoryId(webName2) == null, "the later (app) name wins on the server")
+        assertTrue(appName2 in b.categoryNames() && webName2 !in b.categoryNames())
+    }
+
+    // =========================================================================== the operation log
+
+    @Test
+    fun `what the user does on the app is published to the server's log with the time it was done`() {
+        val app = device("phone", 33)
+        val anHourAgo = -3_600_000L
+        val before = System.currentTimeMillis()
+        app.at(anHourAgo) { app.read(33, 1, page = 2) }
+
+        app.sync()
+
+        val key = "progress:0|${Live.mangaUrl(33)}|${Live.chapterUrl(33, 1)}"
+        val op = server.operations().single { it.key == key && it.deviceId == app.preferences.deviceId().get() }
+        assertEquals("PROGRESS", op.entity)
+        assertEquals("SET", op.action)
+        assertTrue(op.ts in (before + anHourAgo - 5_000)..(before + anHourAgo + 30_000), "dated when it was done, an hour before the sync: ${op.ts}")
+        assertEquals(true, (op.value as kotlinx.serialization.json.JsonObject)["read"]!!.toString().toBoolean())
+    }
+
+    @Test
+    fun `a change the app pushes is in the log once, and publishing twice does not repeat it`() {
+        val app = device("phone", 34)
+        app.read(34, 1, page = 1)
+        app.sync()
+        app.sync()
+        app.sync()
+
+        val key = "progress:0|${Live.mangaUrl(34)}|${Live.chapterUrl(34, 1)}"
+        val entries = server.operations().filter { it.key == key }
+        assertEquals(1, entries.size, "one entry: the device's own, not a second one made by the server for the same push")
+        assertEquals(app.preferences.deviceId().get(), entries.single().deviceId)
+        assertTrue(app.operations.pending().isEmpty(), "nothing is left waiting to be published")
+    }
+
+    @Test
+    fun `what the web does is logged by the server as the web, with the time it happened`() {
+        val before = server.lastSeq()
+        val name = unique("logged")
+        server.createCategory(name)
+        server.read(35, 1, page = 2)
+
+        val ops = server.operations(before)
+
+        val category = ops.single { it.entity == "CATEGORY" && it.value.toString().contains(name) }
+        assertEquals("web", category.deviceId)
+        assertEquals("SET", category.action)
+        val progress = ops.single { it.key == "progress:0|${Live.mangaUrl(35)}|${Live.chapterUrl(35, 1)}" }
+        assertEquals("web", progress.deviceId)
+        assertTrue(progress.ts > 0 && progress.seq > category.seq, "in the order they happened")
+    }
+
+    @Test
+    fun `a change that arrives by sync is not recorded as something this user did`() {
+        val app = device("phone", 36)
+        server.read(36, 1, page = 2)
+        val name = unique("arrives")
+        server.createCategory(name)
+
+        app.sync()
+
+        assertTrue(app.chapter(36, 1).read, "the change arrived")
+        assertTrue(name in app.categoryNames(), "and so did the category")
+        assertTrue(app.operations.all().isEmpty(), "but none of it is this device's own operation: ${app.operations.all()}")
+    }
+
+    @Test
+    fun `a device whose clock is wrong still dates its operations in the server's time`() {
+        val app = device("phone", 37)
+        app.clockOffsetMs = -7_200_000L // this device believes it is two hours earlier than it is
+        val before = System.currentTimeMillis()
+        app.read(37, 1, page = 1)
+
+        app.sync()
+
+        val key = "progress:0|${Live.mangaUrl(37)}|${Live.chapterUrl(37, 1)}"
+        val op = server.operations().single { it.key == key }
+        assertTrue(op.ts in (before - 10_000)..(System.currentTimeMillis() + 10_000), "corrected to the server's clock: ${op.ts} vs $before")
+    }
+
+    // =========================================================================== conflicts are settled by time
+
+    @Test
+    fun `reading both ways at once - an unmarking made later than the other side's reading wins`() {
+        val app = device("phone", 38)
+        app.read(38, 1, page = 2)
+        app.sync()
+
+        // the server reads on to page 3 now; the app marked it unread a moment AFTER that
+        server.read(38, 1, page = 3, read = true)
+        app.at(+600_000) { app.read(38, 1, page = 0, read = false) }
+        app.sync()
+
+        assertFalse(app.chapter(38, 1).read, "the later change (unread) is the real one")
+        assertEquals(false, server.chapter(38, 1).isRead, "and the server follows it")
+        assertEquals(0, server.chapter(38, 1).lastPageRead)
+    }
+
+    @Test
+    fun `reading both ways at once - reading made later than the other side's unmarking wins`() {
+        val app = device("phone", 39)
+        app.read(39, 1, page = 2)
+        app.sync()
+
+        // unread on the app a while ago; the server read on afterwards
+        app.at(-600_000) { app.read(39, 1, page = 0, read = false) }
+        server.read(39, 1, page = 3, read = true)
+        app.sync()
+
+        assertTrue(app.chapter(39, 1).read, "the later change (the reading) is the real one")
+        assertEquals(3, app.chapter(39, 1).last_page_read)
+        assertEquals(true, server.chapter(39, 1).isRead)
+    }
+
+    @Test
+    fun `a removal from the history made after a read on the other side wins`() {
+        val app = device("phone", 40)
+        app.readAt(40, 1, 1_700_000_000_000L)
+        app.sync()
+
+        // the server records a new read, and the user removes the chapter from the history on the app afterwards
+        server.setHistory(40, 1, 1_700_000_900L)
+        app.at(+600_000) { app.removeFromHistory(40, 1) }
+        app.sync()
+
+        assertEquals(0L, app.lastRead(40, 1), "the later change (the removal) is the real one")
+        assertEquals(0L, server.lastReadAt(40, 1), "and the server follows it")
     }
 
     // =========================================================================== everything at once

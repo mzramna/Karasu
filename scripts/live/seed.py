@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Writes what the live sync tests need on a Suwayomi-Server: SQL for the works and chapters, and the CBZ files.
 
-usage: seed.py <server-root> <sql-out> [works=30]
+usage: seed.py <server-root> <sql-out> [works=40]
 
 Works are /live/m01.. on the server's own (local) source, all in user 1's library. Chapters c1 and c2
 are downloaded (a real 3-page CBZ on disk and the flags the server checks); c3 and c4 are not. The SQL
@@ -32,7 +32,7 @@ def png(rgb):
 
 def main():
     root, sql_out = sys.argv[1], sys.argv[2]
-    works = int(sys.argv[3]) if len(sys.argv) > 3 else 30
+    works = int(sys.argv[3]) if len(sys.argv) > 3 else 40
     lines = []
     for n in range(1, works + 1):
         title = "Live M%02d" % n

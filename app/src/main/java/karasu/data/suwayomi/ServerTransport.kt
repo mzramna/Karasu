@@ -16,6 +16,8 @@ data class ServerConfig(
     val secondaryUrl: String,
     val username: String,
     val password: String,
+    /** Sent on every request so the server can tell this device's changes from the others'. */
+    val deviceId: String = "",
 )
 
 /** A response together with the address that produced it. The caller owns (and must close) [response]. */
@@ -126,13 +128,16 @@ class ServerTransport(
     }
 
     private fun Request.withAuth(cfg: ServerConfig): Request {
-        if (cfg.username.isBlank()) return this
-        return newBuilder()
-            .header("Authorization", Credentials.basic(cfg.username, cfg.password, Charsets.UTF_8))
-            .build()
+        val builder = newBuilder()
+        if (cfg.deviceId.isNotBlank()) builder.header(DEVICE_HEADER, cfg.deviceId)
+        if (cfg.username.isNotBlank()) {
+            builder.header("Authorization", Credentials.basic(cfg.username, cfg.password, Charsets.UTF_8))
+        }
+        return builder.build()
     }
 
     companion object {
+        const val DEVICE_HEADER = "X-Karasu-Device"
         const val PRIMARY_CONNECT_TIMEOUT_S = 3L
         const val SECONDARY_CONNECT_TIMEOUT_S = 10L
         const val READ_TIMEOUT_S = 30L

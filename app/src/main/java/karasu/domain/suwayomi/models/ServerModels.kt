@@ -162,3 +162,30 @@ data class DeletionEntry(
 
 @Serializable
 data class ApiError(val error: String = "")
+
+/** One entry of the operation log (contract v2). [ts] is epoch ms of the action; [seq] is the server's order. */
+@Serializable
+data class ServerOperation(
+    val id: String,
+    val deviceId: String,
+    val ts: Long,
+    val entity: String,
+    val key: String,
+    val action: String,
+    val value: kotlinx.serialization.json.JsonElement? = null,
+    val seq: Long = 0,
+)
+
+@Serializable
+data class OperationsPage(
+    val operations: List<ServerOperation> = emptyList(),
+    val lastSeq: Long = 0,
+    /** The server's clock when it answered, to correct this device's clock against. */
+    val serverTime: Long = 0,
+)
+
+@Serializable
+data class PublishOperationsBody(val operations: List<ServerOperation>)
+
+@Serializable
+data class PublishResult(val accepted: Int = 0, val duplicates: Int = 0)

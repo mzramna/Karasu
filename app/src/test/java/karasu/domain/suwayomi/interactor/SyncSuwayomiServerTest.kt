@@ -24,6 +24,8 @@ import karasu.domain.chapter.interactor.UpdateChapter
 import karasu.domain.chapter.models.ChapterUpdate
 import karasu.domain.history.interactor.GetHistory
 import karasu.domain.history.interactor.UpsertHistory
+import karasu.domain.category.interactor.UpdateCategories
+import karasu.domain.operations.OperationLog
 import karasu.domain.manga.interactor.GetManga
 import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSources
@@ -53,12 +55,15 @@ class SyncSuwayomiServerTest {
     private val sourceManager = mockk<SourceManager>(relaxed = true)
     private val getHistory = mockk<GetHistory>(relaxed = true)
     private val upsertHistory = mockk<UpsertHistory>(relaxed = true)
+    private val updateCategories = mockk<UpdateCategories>(relaxed = true)
+    private val operations = OperationLog(preferences)
 
     private val manga = Manga.create("/m", "Title", 3L).apply { id = 1L }
 
     private fun sync() = SyncSuwayomiServer(
         api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
         setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
+        updateCategories, operations,
     )
 
     private fun chapter(id: Long, url: String, read: Boolean = false, page: Int = 0): Chapter =

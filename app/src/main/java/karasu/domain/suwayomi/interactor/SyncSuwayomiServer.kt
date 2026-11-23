@@ -13,11 +13,17 @@ import karasu.data.suwayomi.ServerSyncApi
 import karasu.domain.category.interactor.GetCategories
 import karasu.domain.category.interactor.InsertCategories
 import karasu.domain.category.interactor.SetMangaCategories
+import karasu.domain.category.interactor.UpdateCategories
+import karasu.domain.category.models.CategoryUpdate
 import karasu.domain.chapter.interactor.GetChapter
 import karasu.domain.chapter.interactor.UpdateChapter
 import karasu.domain.chapter.models.ChapterUpdate
 import karasu.domain.history.interactor.GetHistory
 import karasu.domain.history.interactor.UpsertHistory
+import karasu.domain.operations.OpAction
+import karasu.domain.operations.OpEntity
+import karasu.domain.operations.OperationLog
+import karasu.domain.operations.SyncOrigin
 import karasu.domain.manga.interactor.GetManga
 import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSources
@@ -30,12 +36,19 @@ import karasu.domain.suwayomi.models.DownloadPolicy
 import karasu.domain.suwayomi.models.HistoryEntry
 import karasu.domain.suwayomi.models.MangaRef
 import karasu.domain.suwayomi.models.MergedSource
+import karasu.domain.suwayomi.models.ServerOperation
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Reconciles this device with a Suwayomi-Server. The whole sync is driven from here: the server
@@ -69,11 +82,15 @@ class SyncSuwayomiServer(
     private val sourceManager: SourceManager,
     private val getHistory: GetHistory,
     private val upsertHistory: UpsertHistory,
+    private val updateCategories: UpdateCategories,
+    private val operations: OperationLog,
 ) {
 
     data class Summary(
         val categoriesCreatedLocal: Int = 0,
         val categoriesCreatedRemote: Int = 0,
+        val categoriesRenamedLocal: Int = 0,
+        val categoriesRenamedRemote: Int = 0,
         val categoryLinksLocal: Int = 0,
         val categoryLinksRemote: Int = 0,
         val chaptersPulled: Int = 0,
@@ -88,7 +105,7 @@ class SyncSuwayomiServer(
         val errors: List<String> = emptyList(),
     ) {
         val isIdle: Boolean
-            get() = categoriesCreatedLocal + categoriesCreatedRemote + categoryLinksLocal + categoryLinksRemote +
+            get() = categoriesCreatedLocal + categoriesCreatedRemote + categoriesRenamedLocal + categoriesRenamedRemote + categoryLinksLocal + categoryLinksRemote +
                 chaptersPulled + chaptersPushed + mergedPulled + mergedPushed + deletionsApplied + deletionsPushed +
                 historyPulled + historyPushed == 0
     }
@@ -97,16 +114,26 @@ class SyncSuwayomiServer(
 
     suspend fun await(): Summary {
         if (!api.isEnabled) return Summary()
+        // Everything this run writes locally is somebody else's change arriving, not the user's own.
+        return withContext(SyncOrigin()) { run() }
+    }
+
+    private suspend fun run(): Summary {
         summary = Summary()
         removedBecauseOfServer.clear()
+        remoteLatest.clear()
+        opsAvailable = false
+        clockOffset = 0
 
         part("policy") { refreshPolicy() }
+        part("operation log") { pullOperations() }
         if (preferences.applyRemoteDeletions().get()) part("deletions") { applyDeletions() }
         if (preferences.pushLocalDeletions().get()) part("local deletions") { pushLocalDeletions() }
         if (preferences.syncMergedSources().get()) part("merged sources") { syncMerged() }
         if (preferences.syncCategories().get() || preferences.syncProgress().get() || preferences.syncHistory().get()) {
             part("library") { syncLibrary() }
         }
+        part("operation log") { publishOperations() }
         return summary
     }
 
@@ -124,6 +151,142 @@ class SyncSuwayomiServer(
             summary = summary.copy(errors = summary.errors + "$name: ${e.message}")
         }
     }
+
+    // region operation log
+
+    /** Latest change per key made by someone else (the web, another device), in the server's clock. */
+    private val remoteLatest = mutableMapOf<String, Long>()
+
+    /** False for a server from before the log existed: conflicts then fall back to the older rules. */
+    private var opsAvailable = false
+
+    /** The server's clock minus this device's, so what this device did is dated in a time both agree on. */
+    private var clockOffset = 0L
+
+    private enum class Side { LOCAL, REMOTE }
+
+    /**
+     * Reads what the others did since the last run. This is what settles a conflict — both sides
+     * changed the same thing — by the time each change was *made*, instead of by a rule that prefers
+     * one kind of change. Only conflicts consult it; the state comparison still does the rest.
+     */
+    private suspend fun pullOperations() {
+        val mine = preferences.ensureDeviceId()
+        var cursor = preferences.lastOperationSeq().get()
+        try {
+            while (true) {
+                val page = api.operations(cursor, OPERATIONS_PAGE)
+                opsAvailable = true
+                if (page.serverTime > 0) clockOffset = page.serverTime - operations.now()
+                page.operations.filter { it.deviceId != mine }.forEach { remoteLatest.merge(it.key, it.ts, ::maxOf) }
+                if (page.operations.size < OPERATIONS_PAGE || page.lastSeq <= cursor) {
+                    cursor = maxOf(cursor, page.lastSeq)
+                    break
+                }
+                cursor = page.lastSeq
+            }
+            preferences.lastOperationSeq().set(cursor)
+        } catch (e: ServerApiException) {
+            if (e.code != 404 && e.code != 405) throw e // an old server simply has no log
+        }
+    }
+
+    /**
+     * Who made the change that counts, or null when the log cannot say (no entry on one side, or a
+     * server without a log) and the caller must use its own rule. [localTs] is this device's clock;
+     * a tie goes to the server, which is the one clock all devices share.
+     */
+    private fun winner(remoteKey: String, localTs: Long?): Side? {
+        if (!opsAvailable || localTs == null) return null
+        val remote = remoteLatest[remoteKey] ?: return null
+        return if (localTs + clockOffset > remote) Side.LOCAL else Side.REMOTE
+    }
+
+    private fun progressKey(manga: Manga, chapterUrl: String) = "progress:${manga.source}|${manga.url}|$chapterUrl"
+
+    private fun historyKey(manga: Manga, chapterUrl: String) = "history:${manga.source}|${manga.url}|$chapterUrl"
+
+    /**
+     * Tells the server what this device's user did, dated when they did it, so the other devices can
+     * settle their own conflicts against it. An operation that points at something that no longer
+     * exists is dropped: there is nothing left for it to describe.
+     */
+    private suspend fun publishOperations() {
+        if (!opsAvailable) return
+        val pending = operations.pending()
+        if (pending.isEmpty()) return
+        val device = preferences.ensureDeviceId()
+        val categoryMap = loadCategoryMap()
+        val out = pending.mapNotNull { describe(it, device, categoryMap) }
+        api.publishOperations(out)
+        operations.markPublished(pending.map { it.id })
+        operations.prune()
+    }
+
+    private suspend fun describe(
+        op: karasu.domain.operations.LocalOp,
+        device: String,
+        categoryMap: Map<Long, MappedCategory>,
+    ): ServerOperation? {
+        fun build(key: String, value: JsonElement?) =
+            ServerOperation(op.id, device, op.ts + clockOffset, op.entity, key, op.action, value)
+
+        val chapter = op.chapterId?.let { getChapter.awaitById(it) }
+        val mangaId = op.mangaId ?: chapter?.manga_id
+        val manga = mangaId?.let { getManga.awaitById(it) }
+        return when (op.entity) {
+            OpEntity.PROGRESS -> {
+                if (chapter == null || manga == null) return null
+                build(
+                    progressKey(manga, chapter.url),
+                    buildJsonObject { put("read", chapter.read); put("lastPageRead", chapter.last_page_read) },
+                )
+            }
+            OpEntity.HISTORY -> {
+                if (chapter == null || manga == null) return null
+                val lastRead = getHistory.awaitAllByMangaId(manga.id!!).firstOrNull { it.chapter_id == chapter.id }?.last_read ?: 0L
+                build(
+                    historyKey(manga, chapter.url),
+                    if (op.action == OpAction.REMOVE) null else buildJsonObject { put("lastReadAt", lastRead / MILLIS) },
+                )
+            }
+            OpEntity.CATEGORY -> {
+                val remoteId = categoryMap[op.categoryId]?.remoteId ?: return null
+                val name = getCategories.await().firstOrNull { it.id?.toLong() == op.categoryId }?.name ?: op.name
+                build("category:$remoteId", if (op.action == OpAction.REMOVE) null else buildJsonObject { put("name", name ?: "") })
+            }
+            OpEntity.CATEGORY_LINK -> {
+                val remoteId = categoryMap[op.categoryId]?.remoteId ?: return null
+                if (manga == null) return null
+                build("link:${manga.source}|${manga.url}|$remoteId", null)
+            }
+            OpEntity.MERGED -> {
+                if (manga == null) return null
+                val sources = mergedSources.await(manga.id!!)
+                build(
+                    "merged:${manga.source}|${manga.url}",
+                    buildJsonObject {
+                        put(
+                            "sources",
+                            JsonArray(
+                                sources.map {
+                                    buildJsonObject {
+                                        put("sourceId", it.source.toString())
+                                        put("url", it.url)
+                                        put("priority", it.priority)
+                                        put("updatesEnabled", it.updatesEnabled)
+                                    }
+                                },
+                            ),
+                        )
+                    },
+                )
+            }
+            else -> null
+        }
+    }
+
+    // endregion
 
     // region policy
 
@@ -427,43 +590,120 @@ class SyncSuwayomiServer(
         )
     }
 
+    /** How a local category corresponds to a server one, and the name both agreed on last time. */
+    @Serializable
+    internal data class MappedCategory(val remoteId: Int, val name: String)
+
+    private val categoryMapSerializer = MapSerializer(String.serializer(), MappedCategory.serializer())
+
+    private fun loadCategoryMap(): Map<Long, MappedCategory> =
+        decode(preferences.categoryMapSnapshot().get()) { json.decodeFromString(categoryMapSerializer, it) }
+            .mapKeys { it.key.toLong() }
+
+    private fun saveCategoryMap(map: Map<Long, MappedCategory>) {
+        preferences.categoryMapSnapshot().set(json.encodeToString(categoryMapSerializer, map.mapKeys { it.key.toString() }))
+    }
+
     /**
-     * Makes both sides know the same category names, creating what is missing wherever it is.
-     * Names are the identity: ids differ on each side, and a rename looks like a new category.
-     * Deleting a category never propagates — it would take the manga links with it.
+     * Makes both sides know the same categories, creating what is missing wherever it is, and carrying
+     * a rename across.
+     *
+     * A category is the same one on both sides because it was matched once and remembered
+     * ([MappedCategory]); that memory is what lets a changed name be a rename and not a new category.
+     * Renamed on one side: the other follows. Renamed on both, differently: the later one wins (by the
+     * operation log, the server's name when the log cannot say). Whatever is not remembered yet is
+     * matched by name, as before. Deleting a category never propagates — it would take the manga links
+     * with it — so one deleted on a side is simply made again from the other.
      */
     private suspend fun reconcileCategoryNames(): CategoryMap {
         val localCategories = getCategories.await().filter { it.isSyncable() }
-        val remoteCategories = api.categories().filter { !it.isDefault && it.id != 0 }
+        val remoteCategories = api.categories().filter { !it.isDefault && it.id != 0 }.toMutableList()
 
-        val localByKey = localCategories.associateBy { SyncMath.categoryKey(it.name) }.toMutableMap()
-        val remoteByKey = remoteCategories.associateBy { SyncMath.categoryKey(it.name) }.toMutableMap()
+        val remoteById = remoteCategories.associateBy { it.id }.toMutableMap()
+        val localById = localCategories.associateBy { it.id!!.toLong() }
+        val pairs = mutableMapOf<Long, MappedCategory>()
+        var renamedLocal = 0
+        var renamedRemote = 0
+
+        // 1. what was matched before: has either side renamed it?
+        for ((localId, mapped) in loadCategoryMap()) {
+            val local = localById[localId] ?: continue
+            val remote = remoteById[mapped.remoteId] ?: continue
+            val agreed = mapped.name
+            val localName = local.name.trim()
+            val remoteName = remote.name.trim()
+            val localChanged = localName != agreed
+            val remoteChanged = remoteName != agreed
+            val name = when {
+                !localChanged && !remoteChanged -> agreed
+                localName == remoteName -> localName
+                localChanged && !remoteChanged -> localName.also { renameRemote(remote.id, it); renamedRemote++ }
+                remoteChanged && !localChanged -> remoteName.also { renameLocal(local, it); renamedLocal++ }
+                else -> {
+                    // both renamed, differently: the one done later is the real name
+                    val side = winner("category:${remote.id}", operations.latest(OpEntity.CATEGORY, categoryId = localId))
+                    if (side == Side.LOCAL) {
+                        localName.also { renameRemote(remote.id, it); renamedRemote++ }
+                    } else {
+                        remoteName.also { renameLocal(local, it); renamedLocal++ }
+                    }
+                }
+            }
+            pairs[localId] = MappedCategory(remote.id, name)
+        }
+
+        // 2. what was never matched: by name, then create what the other side lacks
+        val takenRemote = pairs.values.mapTo(mutableSetOf()) { it.remoteId }
+        val freeLocal = localCategories.filter { it.id!!.toLong() !in pairs }.associateBy { SyncMath.categoryKey(it.name) }.toMutableMap()
+        val freeRemote = remoteCategories.filter { it.id !in takenRemote }.associateBy { SyncMath.categoryKey(it.name) }.toMutableMap()
+
+        for (key in freeLocal.keys.intersect(freeRemote.keys)) {
+            val local = freeLocal.getValue(key)
+            val remote = freeRemote.getValue(key)
+            pairs[local.id!!.toLong()] = MappedCategory(remote.id, local.name.trim())
+        }
+        val matched = freeLocal.keys.intersect(freeRemote.keys)
+        freeLocal.keys.removeAll(matched)
+        freeRemote.keys.removeAll(matched)
 
         var createdLocal = 0
         var createdRemote = 0
-
-        (remoteByKey.keys - localByKey.keys).forEach { key ->
-            val remote = remoteByKey.getValue(key)
+        val maxOrder = localCategories.maxOfOrNull { it.order } ?: 0
+        freeRemote.values.forEachIndexed { index, remote ->
             val category = Category.create(remote.name.trim()).apply {
-                order = (localByKey.values.maxOfOrNull { it.order } ?: 0) + 1
+                order = maxOrder + 1 + index
                 mangaSort = LibrarySort.Title.categoryValue
             }
-            val id = insertCategories.awaitOne(category) ?: return@forEach
-            category.id = id.toInt()
-            localByKey[key] = category
+            val id = insertCategories.awaitOne(category) ?: return@forEachIndexed
+            pairs[id] = MappedCategory(remote.id, remote.name.trim())
             createdLocal++
         }
-        for (key in localByKey.keys - remoteByKey.keys) {
-            val local = localByKey.getValue(key)
-            remoteByKey[key] = api.createCategory(local.name.trim())
+        for (local in freeLocal.values) {
+            val remote = api.createCategory(local.name.trim())
+            pairs[local.id!!.toLong()] = MappedCategory(remote.id, local.name.trim())
             createdRemote++
         }
 
-        summary = summary.copy(categoriesCreatedLocal = createdLocal, categoriesCreatedRemote = createdRemote)
-        return CategoryMap(
-            localIdByKey = localByKey.mapValues { (_, c) -> c.id!!.toLong() },
-            remoteIdByKey = remoteByKey.mapValues { (_, c) -> c.id },
+        saveCategoryMap(pairs)
+        summary = summary.copy(
+            categoriesCreatedLocal = createdLocal,
+            categoriesCreatedRemote = createdRemote,
+            categoriesRenamedLocal = renamedLocal,
+            categoriesRenamedRemote = renamedRemote,
         )
+        return CategoryMap(
+            localIdByKey = pairs.entries.associate { (localId, m) -> SyncMath.categoryKey(m.name) to localId },
+            remoteIdByKey = pairs.values.associate { SyncMath.categoryKey(it.name) to it.remoteId },
+        )
+    }
+
+    private suspend fun renameRemote(remoteId: Int, name: String) {
+        api.renameCategory(remoteId, name)
+    }
+
+    private suspend fun renameLocal(category: Category, name: String) {
+        updateCategories.awaitOne(CategoryUpdate(id = category.id!!.toLong(), name = name))
+        category.name = name
     }
 
     /** Rule-based categories fill themselves from rules, and the system ones are not rows at all. */
@@ -532,7 +772,15 @@ class SyncSuwayomiServer(
             val localState = Progress(chapter.read, chapter.last_page_read)
             val remoteState = remoteChapter.toProgress()
             val baseState = base[chapter.url]?.let { SyncMath.unpackProgress(it) } ?: Progress(false, 0)
-            val merged = SyncMath.mergeProgress(baseState, localState, remoteState)
+            // Both moved it: the log says whose change was made last. Without an answer, the older
+            // rule decides (read on either side is read, the farther page wins).
+            val conflict = localState != baseState && remoteState != baseState && localState != remoteState
+            val side = if (conflict) winner(progressKey(manga, chapter.url), operations.latest(OpEntity.PROGRESS, chapterId = chapterId)) else null
+            val merged = when (side) {
+                Side.LOCAL -> localState
+                Side.REMOTE -> remoteState
+                null -> SyncMath.mergeProgress(baseState, localState, remoteState)
+            }
 
             if (merged != localState) {
                 val pageChanged = merged.lastPageRead != localState.lastPageRead
@@ -578,7 +826,15 @@ class SyncSuwayomiServer(
             val remoteChapter = remoteByUrl[chapter.url] ?: continue
             val chapterId = chapter.id ?: continue
             val local = (lastReadByChapterId[chapterId] ?: 0L) / MILLIS
-            val outcome = SyncMath.mergeHistory(base[chapter.url] ?: 0L, local, remoteChapter.lastReadAt)
+            val baseValue = base[chapter.url] ?: 0L
+            val remoteValue = remoteChapter.lastReadAt
+            val conflict = local != baseValue && remoteValue != baseValue && local != remoteValue
+            val side = if (conflict) winner(historyKey(manga, chapter.url), operations.latest(OpEntity.HISTORY, chapterId = chapterId)) else null
+            val outcome = when (side) {
+                Side.LOCAL -> SyncMath.HistoryOutcome(local, changeLocal = false, changeRemote = true)
+                Side.REMOTE -> SyncMath.HistoryOutcome(remoteValue, changeLocal = true, changeRemote = false)
+                null -> SyncMath.mergeHistory(baseValue, local, remoteValue)
+            }
 
             if (outcome.changeLocal) {
                 // Nothing to write when removing a chapter that is not in the history here.
@@ -648,5 +904,7 @@ class SyncSuwayomiServer(
 
         /** Karasu keeps history times in milliseconds, the server in seconds. */
         const val MILLIS = 1000L
+
+        const val OPERATIONS_PAGE = 1000
     }
 }

@@ -104,6 +104,25 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
     /** `sourceId|url -> chapter urls` that were downloaded at the end of the last sync. */
     fun downloadedSnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_downloaded_snapshot"), "")
 
+    /** Random and permanent per installation: how the server tells this device's operations from the others'. */
+    fun deviceId(): Preference<String> = preferenceStore.getString(Preference.appStateKey("suwayomi_device_id"), "")
+
+    /** The id, made the first time it is asked for. */
+    fun ensureDeviceId(): String {
+        val pref = deviceId()
+        if (pref.get().isBlank()) pref.set(java.util.UUID.randomUUID().toString())
+        return pref.get()
+    }
+
+    /** Highest operation `seq` of the server's log already looked at. */
+    fun lastOperationSeq() = preferenceStore.getLong(Preference.appStateKey("suwayomi_last_operation_seq"), 0L)
+
+    /** This device's own operation log, as JSON (see `OperationLog`). */
+    fun operationLog() = preferenceStore.getString(Preference.appStateKey("suwayomi_operation_log"), "")
+
+    /** `local category id -> {server id, agreed name}`: how a rename is told from a new category. */
+    fun categoryMapSnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_category_map"), "")
+
     fun lastSyncAt() = preferenceStore.getLong(Preference.appStateKey("suwayomi_last_sync_at"), 0L)
 
     /** Already localised when written, because only the job knows what happened. */

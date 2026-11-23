@@ -30,6 +30,10 @@ import karasu.domain.suwayomi.models.HistoryEntry
 import karasu.domain.suwayomi.models.HistoryUpdated
 import karasu.domain.suwayomi.models.MangaLookup
 import karasu.domain.suwayomi.models.MangaRef
+import karasu.domain.suwayomi.models.OperationsPage
+import karasu.domain.suwayomi.models.PublishOperationsBody
+import karasu.domain.suwayomi.models.PublishResult
+import karasu.domain.suwayomi.models.ServerOperation
 import karasu.domain.suwayomi.models.MergedGroup
 import karasu.domain.suwayomi.models.MergedSource
 import karasu.domain.suwayomi.models.MergedSourcesBody
@@ -270,6 +274,24 @@ class ServerSyncApi(
         return answer.response.use { it.decode<HistoryUpdated>().updated }
     }
 
+    // region operation log
+
+    /** Operations of the server's log after [afterSeq], oldest first, plus the server's clock. */
+    suspend fun operations(afterSeq: Long, limit: Int = 1000): OperationsPage =
+        getJson("operations", "afterSeq" to afterSeq.toString(), "limit" to limit.toString())
+
+    /** Publishes what this device did, with the time it did it. Idempotent by operation id. */
+    suspend fun publishOperations(operations: List<ServerOperation>): PublishResult {
+        if (operations.isEmpty()) return PublishResult()
+        val body = json.encodeToString(PublishOperationsBody.serializer(), PublishOperationsBody(operations))
+        val answer = transport.execute { base ->
+            Request.Builder().url(base.endpoint("operations")).post(body.toRequestBody(JSON_MEDIA)).build()
+        }
+        return answer.response.use { it.decode<PublishResult>() }
+    }
+
+    // endregion
+
     /** Tombstones with an id greater than [afterId], oldest first. */
     suspend fun deletions(afterId: Long): List<DeletionEntry> =
         getJson("deletions", "afterId" to afterId.toString())
@@ -308,6 +330,11 @@ class ServerSyncApi(
     suspend fun createCategory(name: String): RemoteCategory {
         val data = graphql(ServerGraphQl.CREATE_CATEGORY, buildJsonObject { put("name", name) })
         return json.decodeFromJsonElement<CreateCategoryData>(data).createCategory.category
+    }
+
+    suspend fun renameCategory(id: Int, name: String): RemoteCategory {
+        val data = graphql(ServerGraphQl.RENAME_CATEGORY, buildJsonObject { put("id", id); put("name", name) })
+        return json.decodeFromJsonElement<RenameCategoryData>(data).updateCategory.category
     }
 
     suspend fun updateMangaCategories(mangaId: Int, toAdd: Collection<Int>, toRemove: Collection<Int>) {
@@ -420,6 +447,7 @@ class ServerSyncApi(
                         secondaryUrl = preferences.secondaryUrl().get(),
                         username = preferences.username().get(),
                         password = preferences.password().get(),
+                        deviceId = preferences.ensureDeviceId(),
                     )
                 },
                 baseClient = network.client,

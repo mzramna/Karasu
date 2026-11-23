@@ -1,5 +1,6 @@
 package karasu.data.suwayomi
 
+import karasu.domain.suwayomi.interactor.Live
 import karasu.domain.suwayomi.models.DownloadPolicy
 import karasu.domain.suwayomi.models.MangaRef
 import karasu.domain.suwayomi.models.MergedSource
@@ -12,7 +13,6 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import java.io.File
 import java.util.zip.ZipInputStream
@@ -21,24 +21,23 @@ import java.util.zip.ZipInputStream
  * Talks to a real Suwayomi-Server (the mzramna fork). Skipped unless the environment says where it is:
  *
  *   KARASU_LIVE_URL=http://127.0.0.1:4591 KARASU_LIVE_USER=karasu KARASU_LIVE_PASS=s3cret \
- *   KARASU_LIVE_MANGA_URL=/seed/alpha KARASU_LIVE_SOURCE_ID=0 \
- *   KARASU_LIVE_DOWNLOADED=/seed/alpha/c2 KARASU_LIVE_MISSING=/seed/alpha/c3 \
+ *   KARASU_LIVE_MANGA_URL=/live/m30 KARASU_LIVE_SOURCE_ID=0 \
+ *   KARASU_LIVE_DOWNLOADED=/live/m30/c2 KARASU_LIVE_MISSING=/live/m30/c3 \
  *   ./gradlew :app:testStandardDebugUnitTest --tests '*ServerSyncApiLiveTest'
  *
  * The server needs a library manga with one chapter downloaded as CBZ and one that is not.
  */
 class ServerSyncApiLiveTest {
 
-    private val url = System.getenv("KARASU_LIVE_URL").orEmpty()
-    private val user = System.getenv("KARASU_LIVE_USER").orEmpty()
-    private val pass = System.getenv("KARASU_LIVE_PASS").orEmpty()
+    private val url get() = Live.url
+    private val user get() = Live.user
+    private val pass get() = Live.pass
     private val sourceId = (System.getenv("KARASU_LIVE_SOURCE_ID") ?: "0").toLong()
-    private val mangaUrl = System.getenv("KARASU_LIVE_MANGA_URL") ?: "/seed/alpha"
-    private val downloadedUrl = System.getenv("KARASU_LIVE_DOWNLOADED") ?: "/seed/alpha/c2"
-    private val missingUrl = System.getenv("KARASU_LIVE_MISSING") ?: "/seed/alpha/c3"
+    private val mangaUrl = System.getenv("KARASU_LIVE_MANGA_URL") ?: "/live/m30"
+    private val downloadedUrl = System.getenv("KARASU_LIVE_DOWNLOADED") ?: "/live/m30/c2"
+    private val missingUrl = System.getenv("KARASU_LIVE_MISSING") ?: "/live/m30/c3"
 
     private fun api(primary: String = url, secondary: String = ""): ServerSyncApi {
-        assumeTrue(url.isNotEmpty(), "KARASU_LIVE_URL not set: live server test skipped")
         val reachability = ServerReachability()
         return ServerSyncApi(
             transport = ServerTransport(
@@ -63,7 +62,6 @@ class ServerSyncApiLiveTest {
 
     @Test
     fun `a wrong password is refused instead of being taken for a server that is not the fork`() {
-        assumeTrue(System.getenv("KARASU_LIVE_URL") != null)
         val reachability = ServerReachability()
         val bad = ServerSyncApi(
             ServerTransport({ ServerConfig(url, "", user, "wrong") }, OkHttpClient(), reachability),

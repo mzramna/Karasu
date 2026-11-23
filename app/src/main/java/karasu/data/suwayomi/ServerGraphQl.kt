@@ -27,6 +27,14 @@ internal object ServerGraphQl {
         }
     """
 
+    const val RENAME_CATEGORY = """
+        mutation KarasuRenameCategory(${'$'}id: Int!, ${'$'}name: String!) {
+          updateCategory(input: {id: ${'$'}id, patch: {name: ${'$'}name}}) {
+            category { id name order default }
+          }
+        }
+    """
+
     const val UPDATE_MANGA_CATEGORIES = """
         mutation KarasuUpdateMangaCategories(${'$'}id: Int!, ${'$'}add: [Int!], ${'$'}remove: [Int!]) {
           updateMangaCategories(
@@ -117,6 +125,9 @@ internal data class CreateCategoryData(val createCategory: CreatedCategory) {
     @Serializable
     data class CreatedCategory(val category: RemoteCategory)
 }
+
+@Serializable
+internal data class RenameCategoryData(val updateCategory: CreateCategoryData.CreatedCategory)
 
 @Serializable
 internal data class LibraryData(val mangas: MangaPage)

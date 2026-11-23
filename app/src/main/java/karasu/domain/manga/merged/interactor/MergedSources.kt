@@ -2,6 +2,9 @@ package karasu.domain.manga.merged.interactor
 
 import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.models.MergedMangaSource
+import karasu.domain.operations.OpAction
+import karasu.domain.operations.OpEntity
+import karasu.domain.operations.OperationLog
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -13,7 +16,10 @@ import kotlinx.coroutines.sync.withLock
  */
 // ponytail: one multi-method interactor instead of the usual Get/Insert/Delete trio,
 // same as GetChapter. Split it if the read and write paths ever diverge.
-class MergedSources(private val repository: MergedMangaRepository) {
+class MergedSources(
+    private val repository: MergedMangaRepository,
+    private val operations: OperationLog? = null,
+) {
 
     // ponytail: caches only *which* manga are merged, not the merges themselves. Chapter
     // reads run per manga across the whole library, and almost no manga is merged, so this
@@ -31,6 +37,7 @@ class MergedSources(private val repository: MergedMangaRepository) {
     suspend fun add(mangaId: Long, source: Long, url: String, priority: Int) {
         repository.insert(mangaId, source, url, priority)
         invalidate()
+        recordChange(mangaId)
     }
 
     /**
@@ -48,21 +55,32 @@ class MergedSources(private val repository: MergedMangaRepository) {
         return true
     }
 
-    suspend fun reorder(mangaId: Long, source: Long, priority: Int) =
+    suspend fun reorder(mangaId: Long, source: Long, priority: Int) {
         repository.updatePriority(mangaId, source, priority)
+        recordChange(mangaId)
+    }
 
     /** A reserve is kept only for the page fallback: nothing is fetched from it on its own. */
-    suspend fun setReserve(mangaId: Long, source: Long, reserve: Boolean) =
+    suspend fun setReserve(mangaId: Long, source: Long, reserve: Boolean) {
         repository.updateUpdatesEnabled(mangaId, source, !reserve)
+        recordChange(mangaId)
+    }
 
     suspend fun remove(mangaId: Long, source: Long) {
         repository.delete(mangaId, source)
         invalidate()
+        recordChange(mangaId)
     }
 
     suspend fun clear(mangaId: Long) {
         repository.deleteByMangaId(mangaId)
         invalidate()
+        recordChange(mangaId)
+    }
+
+    /** The whole list is what the server and the other devices see, so one entry per manga is enough. */
+    private suspend fun recordChange(mangaId: Long) {
+        operations?.record(OpEntity.MERGED, OpAction.SET, mangaId = mangaId)
     }
 
     private suspend fun cachedIds(): Set<Long> = mutex.withLock {

@@ -78,6 +78,7 @@ import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSourceHealth
 import karasu.domain.manga.merged.interactor.MergedSources
 import karasu.domain.recents.interactor.GetRecents
+import karasu.domain.operations.OperationLog
 import karasu.domain.suwayomi.interactor.SyncSuwayomiServer
 import karasu.domain.source.browse.filter.FilterSerializer
 import karasu.domain.source.browse.filter.SavedSearchRepository
@@ -103,18 +104,19 @@ fun domainModule() = module {
     single { ServerSyncApi.create(get(), get(), get()) }
     single { ServerChapterDownloader(get(), get()) }
     single { ServerBackupTransfer(get<Application>(), get()) }
+    single { OperationLog(get()) }
     factory {
         SyncSuwayomiServer(
-            get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
+            get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
         )
     }
 
     single<CategoryRepository> { CategoryRepositoryImpl(get()) }
     factory { ApplyCategoryRules(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
-    factory { DeleteCategories(get()) }
+    factory { DeleteCategories(get(), get()) }
     factory { GetCategories(get()) }
-    factory { InsertCategories(get()) }
-    factory { UpdateCategories(get()) }
+    factory { InsertCategories(get(), get()) }
+    factory { UpdateCategories(get(), get()) }
     factory { TransferCategoryRules(get(), get()) }
 
     single<ExtensionRepoRepository> { ExtensionRepoRepositoryImpl(get()) }
@@ -163,24 +165,24 @@ fun domainModule() = module {
     single<MergedMangaRepository> { MergedMangaRepositoryImpl(get()) }
     // Both hold a cache that only pays off — and, for MergedSources, only invalidates correctly —
     // when every caller shares the one instance.
-    single { MergedSources(get()) }
+    single { MergedSources(get(), get()) }
     single { MergedSourceFallback(get(), get(), get(), get()) }
     // Holds what the last sync learned about each merge, so it can't be per-injection either.
     single { MergedSourceHealth(get(), get(), get(), get()) }
     factory { MergedSourceSync(get(), get(), get(), get(), get(), get()) }
 
-    factory { SetMangaCategories(get()) }
+    factory { SetMangaCategories(get(), get(), get()) }
 
     single<ChapterRepository> { ChapterRepositoryImpl(get()) }
     factory { DeleteChapter(get()) }
     factory { GetAvailableScanlators(get()) }
     factory { GetChapter(get(), get(), get(), get()) }
     factory { InsertChapter(get()) }
-    factory { UpdateChapter(get()) }
+    factory { UpdateChapter(get(), get()) }
 
     single<HistoryRepository> { HistoryRepositoryImpl(get()) }
     factory { GetHistory(get()) }
-    factory { UpsertHistory(get()) }
+    factory { UpsertHistory(get(), get()) }
 
     factory { GetRecents(get(), get()) }
 
