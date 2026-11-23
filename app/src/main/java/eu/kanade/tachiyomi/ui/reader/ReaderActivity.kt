@@ -83,6 +83,7 @@ import eu.kanade.tachiyomi.data.database.models.Chapter
 import eu.kanade.tachiyomi.data.database.models.orientationType
 import eu.kanade.tachiyomi.data.database.models.readingModeType
 import eu.kanade.tachiyomi.data.preference.changesIn
+import eu.kanade.tachiyomi.data.suwayomi.ServerSyncJob
 import eu.kanade.tachiyomi.data.track.TrackService
 import eu.kanade.tachiyomi.databinding.ReaderActivityBinding
 import eu.kanade.tachiyomi.domain.manga.models.Manga
@@ -271,6 +272,9 @@ class ReaderActivity : BaseActivity<ReaderActivityBinding>() {
     private val basePreferences: BasePreferences by injectLazy()
 
     companion object {
+
+        /** Time for the reader's final progress write to reach the database before a sync reads it. */
+        private const val READER_CLOSE_SYNC_DELAY_S = 10L
 
         const val SHIFT_DOUBLE_PAGES = "shiftingDoublePages"
         const val SHIFTED_PAGE_INDEX = "shiftedPageIndex"
@@ -530,6 +534,9 @@ class ReaderActivity : BaseActivity<ReaderActivityBinding>() {
         // shown for minutes at a time — long enough to be rotated or backed out of.
         translationDialog?.dismiss()
         translationDialog = null
+        // Closing the reader is when the server's copy of the progress goes stale. Not on a
+        // rotation: the reader is coming straight back.
+        if (isFinishing) ServerSyncJob.startIfAutomatic(applicationContext, READER_CLOSE_SYNC_DELAY_S)
     }
 
     /**

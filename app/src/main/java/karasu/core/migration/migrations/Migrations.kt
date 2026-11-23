@@ -11,6 +11,7 @@ val migrations: ImmutableList<Migration> = persistentListOf(
     SetupExtensionUpdateMigration(),
     SetupKoreaderSyncMigration(),
     SetupLibraryUpdateMigration(),
+    SetupSuwayomiSyncMigration(),
 
     // Karasu fork
     CutoutMigration(),
