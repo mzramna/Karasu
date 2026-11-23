@@ -1,0 +1,237 @@
+name: Upstream sync and release
+
+# Keeps this fork's master level with clevim/Karasu and publishes an APK of the result.
+#
+#   1. sync:    merges upstream master into master. A merge commit, never a force-push or a rebase,
+#               so history that was already pushed here is never rewritten. A conflict stops the
+#               run with a readable report and leaves master untouched.
+#   2. release: builds ./gradlew assembleStandardRelease, signs the APKs and attaches them to a
+#               GitHub Release of this fork.
+#
+# Secrets (the same ones build_push.yml already uses; nothing new is required to build):
+#   SIGNING_KEY, ALIAS, KEY_STORE_PASSWORD, KEY_PASSWORD   needed to sign; without them the APKs are
+#                                                          only uploaded as workflow artifacts.
+#   SYNC_PAT (optional)                                    a personal access token with `repo` and
+#                                                          `workflow` scope. Only needed when upstream
+#                                                          changes files under .github/workflows,
+#                                                          which GITHUB_TOKEN is not allowed to push.
+
+on:
+  schedule:
+    # Mondays, 05:17 UTC. Off the hour on purpose: scheduled runs on :00 are the ones GitHub delays.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Build and publish a release even when upstream had nothing new'
+        type: boolean
+        default: true
+
+concurrency:
+  group: upstream-sync-and-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  UPSTREAM_REPO: clevim/Karasu
+  UPSTREAM_BRANCH: master
+
+jobs:
+  sync:
+    name: Merge upstream
+    # Never on the upstream repository itself: there is nothing to merge into.
+    if: github.repository != 'clevim/Karasu'
+    runs-on: ubuntu-latest
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
+      sha: ${{ steps.merge.outputs.sha }}
+    steps:
+      - name: Clone fork
+        uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+          # SYNC_PAT is optional; see the header. GITHUB_TOKEN is enough for everything else.
+          token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Merge upstream into master
+        id: merge
+        shell: bash
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --no-tags upstream "${UPSTREAM_BRANCH}"
+
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD; then
+            echo "Already up to date with ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}"
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "### Upstream sync" >> "$GITHUB_STEP_SUMMARY"
+            echo "Nothing new in \`${UPSTREAM_REPO}\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if ! git merge --no-edit -m "Merge ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} into master" "upstream/${UPSTREAM_BRANCH}"; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            git merge --abort || true
+
+            {
+              echo "### Upstream sync stopped: merge conflict"
+              echo
+              echo "Merging \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` into \`master\` conflicts in:"
+              echo
+              echo '```'
+              echo "$conflicts"
+              echo '```'
+              echo
+              echo "Master was **not** changed. Resolve it locally:"
+              echo
+              echo '```'
+              echo "git fetch upstream && git checkout master && git merge upstream/${UPSTREAM_BRANCH}"
+              echo "# fix the files above, commit, then push"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            echo "::error title=Upstream merge conflict::${UPSTREAM_REPO} cannot be merged into master automatically. Conflicting files: $(echo "$conflicts" | tr '\n' ' ')"
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          # Plain push: if master moved while this ran, it is rejected instead of overwritten.
+          git push origin HEAD:master
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Upstream sync"
+            echo "Merged \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` into \`master\`:"
+            echo
+            git log --oneline --no-merges "ORIG_HEAD..HEAD" | head -50 | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open an issue about the conflict
+        if: failure() && steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Upstream merge conflict with ${UPSTREAM_REPO}"
+          # One open issue is enough; later runs only point at it.
+          existing="$(gh issue list --state open --search "\"${title}\" in:title" --json number --jq '.[0].number // empty')"
+          body="The scheduled sync could not merge \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` into \`master\`. See the run for the conflicting files: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+
+  release:
+    name: Build and release
+    needs: sync
+    # Scheduled runs release only when upstream brought something; a manual run decides with the input.
+    if: needs.sync.outputs.merged == 'true' || (github.event_name == 'workflow_dispatch' && inputs.release)
+    runs-on: ubuntu-latest
+    env:
+      SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+      ALIAS: ${{ secrets.ALIAS }}
+      KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+    steps:
+      - name: Clone fork at the synced commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Setup Android SDK
+        run: |
+          ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager "build-tools;35.0.0"
+
+      - name: Setup JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+          cache-read-only: true
+
+      - name: Copy CI gradle.properties
+        run: |
+          mkdir -p ~/.gradle
+          cp .github/runner-files/ci-gradle.properties ~/.gradle/gradle.properties
+
+      - name: Build
+        run: ./gradlew assembleStandardRelease
+
+      - name: Name the release
+        id: meta
+        shell: bash
+        run: |
+          short="$(git rev-parse --short HEAD)"
+          echo "TAG=fork-$(date -u +%Y%m%d)-${short}" >> "$GITHUB_OUTPUT"
+          echo "SHORT=${short}" >> "$GITHUB_OUTPUT"
+          if [ -n "${SIGNING_KEY}" ]; then echo "SIGNED=true" >> "$GITHUB_OUTPUT"; else echo "SIGNED=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Sign APKs
+        if: steps.meta.outputs.SIGNED == 'true'
+        shell: bash
+        run: |
+          set -e
+          dir=app/build/outputs/apk/standard/release
+          BUILD_TOOLS="${ANDROID_SDK_ROOT}/build-tools/35.0.0"
+          echo "$SIGNING_KEY" | base64 -d > /tmp/signingkey.jks
+          mkdir -p dist
+          for apk in "$dir"/karasu-standard-*.apk; do
+            name="$(basename "$apk" .apk)"
+            "$BUILD_TOOLS/zipalign" -p -f 4 "$apk" "$apk.aligned"
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks /tmp/signingkey.jks \
+              --out "dist/${name}-${{ steps.meta.outputs.TAG }}.apk" \
+              --ks-key-alias "$ALIAS" \
+              --ks-pass "pass:$KEY_STORE_PASSWORD" \
+              --key-pass "pass:$KEY_PASSWORD" \
+              "$apk.aligned"
+            rm "$apk.aligned"
+          done
+          rm /tmp/signingkey.jks
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt)
+          ls -l dist
+
+      - name: Upload unsigned APKs as artifact
+        if: steps.meta.outputs.SIGNED != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: karasu-unsigned-${{ steps.meta.outputs.SHORT }}
+          path: app/build/outputs/apk/standard/release/karasu-standard-*.apk
+
+      - name: Explain the missing signing key
+        if: steps.meta.outputs.SIGNED != 'true'
+        run: |
+          echo "::warning title=APKs not signed::SIGNING_KEY is not set in this repository, so no release was created. The unsigned APKs are attached to this run as an artifact. Set SIGNING_KEY, ALIAS, KEY_STORE_PASSWORD and KEY_PASSWORD (the same secrets build_push.yml uses) to publish signed releases."
+
+      - name: Create release
+        if: steps.meta.outputs.SIGNED == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.TAG }}
+          target_commitish: ${{ needs.sync.outputs.sha }}
+          name: Karasu (${{ github.repository_owner }} fork) ${{ steps.meta.outputs.TAG }}
+          body: |
+            Automatic build of this fork at `${{ steps.meta.outputs.SHORT }}`, including everything merged from `clevim/Karasu`.
+
+            If you are unsure which file to download, take the one with **universal** in its name.
+            Checksums are in `SHA256SUMS.txt`.
+          files: |
+            dist/*.apk
+            dist/SHA256SUMS.txt
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
