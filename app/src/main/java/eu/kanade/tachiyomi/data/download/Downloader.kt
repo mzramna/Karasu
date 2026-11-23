@@ -67,6 +67,7 @@ import karasu.core.archive.ZipWriter
 import karasu.core.metadata.COMIC_INFO_FILE
 import karasu.core.metadata.ComicInfo
 import karasu.core.metadata.getComicInfo
+import karasu.data.suwayomi.ServerChapterDownloader
 import karasu.domain.category.interactor.GetCategories
 import karasu.domain.download.DownloadPreferences
 import karasu.domain.translation.TranslationPreferences
@@ -93,6 +94,7 @@ class Downloader(
     private val mergedSourceFallback: MergedSourceFallback by injectLazy()
     private val translationPreferences: TranslationPreferences by injectLazy()
     private val translationManager: TranslationManager by injectLazy()
+    private val serverChapterDownloader: ServerChapterDownloader by injectLazy()
 
     /**
      * Store for persisting downloads across restarts.
@@ -377,6 +379,26 @@ class Downloader(
             return
         }
         val chapterDirname = provider.getChapterDirName(download.chapter, includeId = downloadPreferences.downloadWithId().get())
+
+        // A chapter the Suwayomi server already has is copied from it instead of re-downloaded.
+        // Any failure returns false and the download carries on from the source as usual.
+        if (serverChapterDownloader.isActive()) {
+            download.status = Download.State.DOWNLOADING
+            val copied = serverChapterDownloader.tryFetch(
+                download.manga,
+                download.chapter,
+                mangaDir,
+                chapterDirname,
+                preferences.saveChaptersAsCBZ().get(),
+            )
+            if (copied) {
+                cache.addChapter(chapterDirname, mangaDir, download.manga)
+                download.status = Download.State.DOWNLOADED
+                translateAfterDownload(download)
+                return
+            }
+        }
+
         val tmpDir = mangaDir.createDirectory(chapterDirname + TMP_DIR_SUFFIX)!!
 
         try {
@@ -455,24 +477,28 @@ class Downloader(
 
             download.status = Download.State.DOWNLOADED
 
-            if (translationPreferences.autoTranslateAfterDownload().get()) {
-                val metered = context.connectivityManager.isActiveNetworkMetered
-                if (metered && translationPreferences.autoTranslateOnlyUnmetered().get()) {
-                    // Not dropped: translated as soon as there is Wi-Fi.
-                    download.chapter.id?.let { PendingTranslationJob.add(context, it) }
-                } else {
-                    // `source` may have moved to whichever merged source served the pages; the
-                    // translation is filed under the manga being read and its own source, which
-                    // is also where `findChapterDir` will look for what was just downloaded.
-                    translationManager.translateChapter(download.manga, download.chapter, download.source)
-                }
-            }
+            translateAfterDownload(download)
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             // If the page list threw, it will resume here
             Logger.e(error)
             download.status = Download.State.ERROR
             notifier.onError(error.message, chapName, download.manga.title)
+        }
+    }
+
+    private fun translateAfterDownload(download: Download) {
+        if (translationPreferences.autoTranslateAfterDownload().get()) {
+            val metered = context.connectivityManager.isActiveNetworkMetered
+            if (metered && translationPreferences.autoTranslateOnlyUnmetered().get()) {
+                // Not dropped: translated as soon as there is Wi-Fi.
+                download.chapter.id?.let { PendingTranslationJob.add(context, it) }
+            } else {
+                // `source` may have moved to whichever merged source served the pages; the
+                // translation is filed under the manga being read and its own source, which
+                // is also where `findChapterDir` will look for what was just downloaded.
+                translationManager.translateChapter(download.manga, download.chapter, download.source)
+            }
         }
     }
 
