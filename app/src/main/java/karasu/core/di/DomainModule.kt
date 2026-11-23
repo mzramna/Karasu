@@ -13,6 +13,10 @@ import karasu.data.library.custom.CustomMangaRepositoryImpl
 import karasu.data.manga.MangaRepositoryImpl
 import karasu.data.manga.failures.MangaUpdateFailureRepositoryImpl
 import karasu.data.manga.merged.MergedMangaRepositoryImpl
+import karasu.data.suwayomi.ServerBackupTransfer
+import karasu.data.suwayomi.ServerChapterDownloader
+import karasu.data.suwayomi.ServerReachability
+import karasu.data.suwayomi.ServerSyncApi
 import karasu.data.source.browse.filter.SavedSearchRepositoryImpl
 import karasu.data.track.TrackRepositoryImpl
 import karasu.domain.category.CategoryRepository
@@ -74,6 +78,7 @@ import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSourceHealth
 import karasu.domain.manga.merged.interactor.MergedSources
 import karasu.domain.recents.interactor.GetRecents
+import karasu.domain.suwayomi.interactor.SyncSuwayomiServer
 import karasu.domain.source.browse.filter.FilterSerializer
 import karasu.domain.source.browse.filter.SavedSearchRepository
 import karasu.domain.source.browse.filter.interactor.DeleteSavedSearch
@@ -91,6 +96,14 @@ fun domainModule() = module {
     factory { BuildRuleInputs(get(), get(), get(), get(), get(), get(), get()) }
     factory { PrepareShelfCbz(get(), get()) }
     factory { SyncKoreaderShelf(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+
+    // One reachability and one transport for the whole app: the last-good-address memory and the
+    // "server is down, stop asking" back-off are only worth anything when everyone shares them.
+    single { ServerReachability().also { it.attach(get<Application>()) } }
+    single { ServerSyncApi.create(get(), get(), get()) }
+    single { ServerChapterDownloader(get(), get()) }
+    single { ServerBackupTransfer(get<Application>(), get()) }
+    factory { SyncSuwayomiServer(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
 
     single<CategoryRepository> { CategoryRepositoryImpl(get()) }
     factory { ApplyCategoryRules(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }

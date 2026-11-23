@@ -18,6 +18,7 @@ import karasu.domain.library.LibraryPreferences
 import karasu.domain.recents.RecentsPreferences
 import karasu.domain.source.SourcePreferences
 import karasu.domain.storage.StoragePreferences
+import karasu.domain.suwayomi.ServerPreferences
 import karasu.domain.translation.TranslationPreferences
 import karasu.translation.translator.OpenRouterQuota
 import karasu.domain.ui.UiPreferences
@@ -54,6 +55,8 @@ fun preferenceModule(application: Application) = module {
     single { LibraryPreferences(get()) }
 
     single { KoreaderPreferences(get()) }
+
+    single { ServerPreferences(get()) }
 
     single { TranslationPreferences(get()) }
     single { OpenRouterQuota(get()) }
