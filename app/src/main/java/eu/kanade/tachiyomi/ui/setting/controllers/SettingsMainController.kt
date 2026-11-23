@@ -106,6 +106,13 @@ class SettingsMainController : SettingsLegacyController(), FloatingSearchInterfa
             summaryRes = MR.strings.koreader_summary
             onClick { navigateTo(SettingsKoreaderController()) }
         }
+        preference {
+            iconRes = R.drawable.ic_cloud_24dp
+            iconTint = tintColor
+            titleRes = MR.strings.suwayomi
+            summaryRes = MR.strings.suwayomi_summary
+            onClick { navigateTo(SettingsSyncController()) }
+        }
         preferenceLongClickable {
             iconRes = R.drawable.ic_storage_24dp
             iconTint = tintColor
