@@ -162,7 +162,8 @@ class SyncSuwayomiServer(
     @Serializable
     private data class SnapshotEntry(val sourceId: String, val url: String, val updatesEnabled: Boolean = true)
 
-    private val mergedSnapshotSerializer = MapSerializer(String.serializer(), ListSerializer(SnapshotEntry.serializer()))
+    private val mergedSnapshotSerializer =
+        MapSerializer(String.serializer(), ListSerializer(SnapshotEntry.serializer()))
 
     private fun loadMergedSnapshot(): Map<String, List<MergedEntry>> = decode(preferences.mergedSnapshot().get()) {
         json.decodeFromString(mergedSnapshotSerializer, it).mapValues { (_, list) ->
@@ -408,10 +409,11 @@ class SyncSuwayomiServer(
             val merged = SyncMath.mergeProgress(localState, remoteState)
 
             if (merged != localState) {
+                val pageChanged = merged.lastPageRead != localState.lastPageRead
                 updates += ChapterUpdate(
                     id = chapterId,
                     read = merged.read.takeIf { it != localState.read },
-                    lastPageRead = merged.lastPageRead.toLong().takeIf { merged.lastPageRead != localState.lastPageRead },
+                    lastPageRead = merged.lastPageRead.toLong().takeIf { pageChanged },
                 )
             }
             if (merged != remoteState) {

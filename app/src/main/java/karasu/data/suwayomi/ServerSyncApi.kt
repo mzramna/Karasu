@@ -166,7 +166,7 @@ class ServerSyncApi(
                 .build()
             Request.Builder().url(base.endpoint("backups/upload", "device" to device)).post(body).build()
         }
-        return answer.response.use { it.decode() }
+        return answer.response.use { it.decode<BackupInfo>() }
     }
 
     suspend fun listBackups(): List<BackupInfo> = getJson("backups")
@@ -346,7 +346,7 @@ class ServerSyncApi(
 
     private suspend inline fun <reified T> getJson(path: String, vararg query: Pair<String, String>): T {
         val answer = transport.execute { get(it, path, *query) }
-        return answer.response.use { it.decode() }
+        return answer.response.use { it.decode<T>() }
     }
 
     /** 404 is "not there", which for lookups is a normal answer. */
@@ -360,7 +360,7 @@ class ServerSyncApi(
         val answer = transport.execute { base ->
             Request.Builder().url(base.endpoint(path)).put(text.toRequestBody(JSON_MEDIA)).build()
         }
-        return answer.response.use { it.decode() }
+        return answer.response.use { it.decode<T>() }
     }
 
     private inline fun <reified T> Response.decode(): T {

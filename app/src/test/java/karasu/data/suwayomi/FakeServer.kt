@@ -1,55 +1,119 @@
 package karasu.data.suwayomi
 
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.InetAddress
-import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.concurrent.thread
 
 /**
- * A throwaway HTTP server on the loopback, built on the JDK so the tests need no extra dependency.
- * Every request it sees is recorded, and [handler] decides the answer.
+ * A throwaway HTTP/1.1 server on the loopback, written on plain sockets so the tests need no
+ * extra dependency (the unit-test classpath is Android's, which has no `com.sun.net.httpserver`).
+ *
+ * It understands exactly what OkHttp sends: a request line, headers, and a body announced by
+ * `Content-Length`. Every connection is answered once and closed. Each request is recorded and
+ * [handler] decides the reply.
  */
 class FakeServer(private val handler: (Request) -> Reply) : AutoCloseable {
 
-    data class Request(val method: String, val path: String, val query: String?, val headers: Map<String, String>, val body: String)
+    data class Request(
+        val method: String,
+        val path: String,
+        val query: String?,
+        val headers: Map<String, String>,
+        val body: String,
+    )
 
     data class Reply(val code: Int = 200, val body: String = "", val contentType: String = "application/json")
 
     val requests = CopyOnWriteArrayList<Request>()
 
-    private val server: HttpServer = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
-        createContext("/") { exchange -> serve(exchange) }
-        start()
-    }
+    private val socket = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
 
-    val url: String get() = "http://127.0.0.1:${server.address.port}"
+    @Volatile
+    private var running = true
 
-    private fun serve(exchange: HttpExchange) {
-        val request = Request(
-            method = exchange.requestMethod,
-            path = exchange.requestURI.rawPath,
-            query = exchange.requestURI.rawQuery,
-            headers = exchange.requestHeaders.entries.associate { it.key.lowercase() to it.value.first() },
-            body = exchange.requestBody.readBytes().decodeToString(),
-        )
-        requests += request
-        val reply = handler(request)
-        val bytes = reply.body.toByteArray()
-        exchange.responseHeaders.add("Content-Type", reply.contentType)
-        // HEAD must announce a length but carry no body.
-        if (exchange.requestMethod == "HEAD") {
-            exchange.responseHeaders.add("Content-Length", bytes.size.toString())
-            exchange.sendResponseHeaders(reply.code, -1)
-        } else {
-            exchange.sendResponseHeaders(reply.code, if (bytes.isEmpty()) -1 else bytes.size.toLong())
-            if (bytes.isNotEmpty()) exchange.responseBody.use { it.write(bytes) }
+    private val acceptor = thread(isDaemon = true, name = "fake-server") {
+        while (running) {
+            val client = try {
+                socket.accept()
+            } catch (e: Exception) {
+                break
+            }
+            thread(isDaemon = true) { serve(client) }
         }
-        exchange.close()
     }
 
-    override fun close() = server.stop(0)
+    val url: String get() = "http://127.0.0.1:${socket.localPort}"
+
+    private fun serve(client: Socket) {
+      client.use {
+        try {
+            val input = BufferedInputStream(client.getInputStream())
+            val requestLine = readLine(input) ?: return@use
+            val (method, target) = requestLine.split(' ').let { it[0] to it[1] }
+            val headers = mutableMapOf<String, String>()
+            while (true) {
+                val line = readLine(input)
+                if (line.isNullOrEmpty()) break
+                headers[line.substringBefore(':').trim().lowercase()] = line.substringAfter(':').trim()
+            }
+            val length = headers["content-length"]?.toIntOrNull() ?: 0
+            val body = ByteArray(length).also { buffer ->
+                var read = 0
+                while (read < length) {
+                    val n = input.read(buffer, read, length - read)
+                    if (n < 0) break
+                    read += n
+                }
+            }.decodeToString()
+
+            val request = Request(
+                method = method,
+                path = target.substringBefore('?'),
+                query = target.substringAfter('?', "").ifEmpty { null },
+                headers = headers,
+                body = body,
+            )
+            requests += request
+            val reply = handler(request)
+            val bytes = reply.body.toByteArray()
+            val head = buildString {
+                append("HTTP/1.1 ${reply.code} X\r\n")
+                append("Content-Type: ${reply.contentType}\r\n")
+                append("Content-Length: ${bytes.size}\r\n")
+                append("Connection: close\r\n\r\n")
+            }
+            client.getOutputStream().apply {
+                write(head.toByteArray())
+                // A HEAD answer announces the length and carries no body.
+                if (method != "HEAD") write(bytes)
+                flush()
+            }
+        } catch (e: Exception) {
+            // A client that hung up mid-request is not the test's concern.
+        }
+      }
+    }
+
+    private fun readLine(input: InputStream): String? {
+        val line = ByteArrayOutputStream()
+        while (true) {
+            val b = input.read()
+            if (b < 0) return if (line.size() == 0) null else line.toString(Charsets.ISO_8859_1)
+            if (b == '\n'.code) return line.toString(Charsets.ISO_8859_1).trimEnd('\r')
+            line.write(b)
+        }
+    }
+
+    override fun close() {
+        running = false
+        socket.close()
+        acceptor.interrupt()
+    }
 
     companion object {
         /** A loopback address nothing listens on: connecting fails at once with "connection refused". */

@@ -119,7 +119,10 @@ class ServerTransportTest {
     @Test
     fun `a bare host and port gets http and a subpath is kept`() {
         assertEquals("http://192.168.1.10:4567/", ServerTransport.parseBase("192.168.1.10:4567")?.toString())
-        assertEquals("https://example.com/suwayomi", ServerTransport.parseBase(" https://example.com/suwayomi/ ")?.toString())
+        assertEquals(
+            "https://example.com/suwayomi",
+            ServerTransport.parseBase(" https://example.com/suwayomi/ ")?.toString(),
+        )
         assertNull(ServerTransport.parseBase("   "))
         assertNotNull(ServerTransport.parseBase("my-box.tailnet.ts.net"))
     }

@@ -28,6 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.hippo.unifile.UniFile
 import dev.icerock.moko.resources.compose.stringResource
+import eu.kanade.tachiyomi.data.backup.BackupFileValidator
 import eu.kanade.tachiyomi.data.backup.BackupFileValidator.Results
 import eu.kanade.tachiyomi.data.backup.create.BackupCreatorJob
 import eu.kanade.tachiyomi.data.backup.create.BackupOptions
@@ -115,7 +116,7 @@ suspend fun DialogHostState.awaitCreateBackup(
     var options by mutableStateOf(BackupOptions())
     // Only offered when sync with the server is on, so a person who never set it up never sees it.
     val canUpload = remember { Injekt.get<ServerSyncApi>().isEnabled }
-    var upload by mutableStateOf(canUpload && Injekt.get<ServerPreferences>().uploadManualBackups().get())
+    var upload by remember { mutableStateOf(canUpload && Injekt.get<ServerPreferences>().uploadManualBackups().get()) }
 
     AlertDialog(
         onDismissRequest = { cont.cancel() },
@@ -259,7 +260,11 @@ private fun ServerBackupPicker(
 }
 
 private fun describe(context: Context, backup: BackupInfo): String {
-    val age = DateUtils.getRelativeTimeSpanString(backup.createdAt, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS)
+    val age = DateUtils.getRelativeTimeSpanString(
+        backup.createdAt,
+        System.currentTimeMillis(),
+        DateUtils.MINUTE_IN_MILLIS,
+    )
     val size = Formatter.formatShortFileSize(context, backup.sizeBytes)
     val device = backup.device?.takeIf { it.isNotBlank() }
     return if (device == null) {

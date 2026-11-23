@@ -69,12 +69,12 @@ internal object ServerGraphQl {
      * `updateChapters` applies a single patch to a list of ids, which is no use when every
      * chapter has its own `lastPageRead`; aliased `updateChapter` calls in one document are.
      */
-    fun updateChaptersDocument(count: Int): String = buildString {
-        append("mutation KarasuUpdateChapters(")
-        repeat(count) { append("\$id$it: Int!, \$patch$it: UpdateChapterPatchInput!") ; if (it < count - 1) append(", ") }
-        append(") {\n")
-        repeat(count) { append("  c$it: updateChapter(input: {id: \$id$it, patch: \$patch$it}) { clientMutationId }\n") }
-        append("}")
+    fun updateChaptersDocument(count: Int): String {
+        val variables = (0 until count).joinToString(", ") { "\$id$it: Int!, \$patch$it: UpdateChapterPatchInput!" }
+        val calls = (0 until count).joinToString("\n") {
+            "  c$it: updateChapter(input: {id: \$id$it, patch: \$patch$it}) { clientMutationId }"
+        }
+        return "mutation KarasuUpdateChapters($variables) {\n$calls\n}"
     }
 }
 

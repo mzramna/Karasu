@@ -83,7 +83,7 @@ class SyncMathTest {
     }
 
     @Test
-    fun `entries are ordered by priority and the source id may arrive as a number`() {
+    fun `entries are ordered by priority and keep the reserve flag`() {
         val entries = listOf(
             MergedSource("20", "/b", priority = 1),
             MergedSource("10", "/a", priority = 0, updatesEnabled = false),

@@ -487,7 +487,7 @@ class Downloader(
         }
     }
 
-    private fun translateAfterDownload(download: Download) {
+    private suspend fun translateAfterDownload(download: Download) {
         if (translationPreferences.autoTranslateAfterDownload().get()) {
             val metered = context.connectivityManager.isActiveNetworkMetered
             if (metered && translationPreferences.autoTranslateOnlyUnmetered().get()) {

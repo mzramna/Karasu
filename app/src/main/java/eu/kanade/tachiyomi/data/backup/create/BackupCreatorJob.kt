@@ -94,9 +94,8 @@ class BackupCreatorJob(private val context: Context, workerParams: WorkerParamet
         } catch (e: Exception) {
             Logger.e(e) { "Unable to upload the backup to the Suwayomi server" }
             if (!isAutoBackup) {
-                notifier.showBackupError(
-                    context.getString(MR.strings.suwayomi_backup_upload_failed, e.message ?: e::class.simpleName.orEmpty()),
-                )
+                val reason = e.message ?: e::class.simpleName.orEmpty()
+                notifier.showBackupError(context.getString(MR.strings.suwayomi_backup_upload_failed, reason))
             }
         }
     }

@@ -75,7 +75,8 @@ object SyncMath {
                 )
                 // Local entries first, in their own order and with their own flags; what only the
                 // server has follows in the server's order.
-                local.filter { it.key in keys } + remote.filter { it.key in keys && local.none { l -> l.key == it.key } }
+                val localKeys = local.mapTo(mutableSetOf()) { it.key }
+                local.filter { it.key in keys } + remote.filter { it.key in keys && it.key !in localKeys }
             }
         }
         return MergedOutcome(result, changeLocal = result != local, changeRemote = result != remote)
