@@ -93,6 +93,8 @@ class MockSuwayomiServer(
     /** False imitates a server from before the operation log: its routes do not exist. */
     @Volatile var operationLogEnabled = true
 
+    private val extensionStoreUrls = mutableListOf<String>()
+
     private var policy = "SERVER_ONLY"
     private var nextCategoryId = 1
     private var nextSeq = 1L
@@ -561,7 +563,12 @@ class MockSuwayomiServer(
         val data = when {
             "KarasuLibrary" in query -> library(variables)
             "KarasuCategories" in query -> buildJsonObject { putJsonObject("categories") { put("nodes", categoryNodes()) } }
-            "KarasuExtensionStores" in query -> buildJsonObject { putJsonObject("extensionStores") { put("nodes", JsonArray(emptyList())) } }
+            "KarasuExtensionStores" in query -> buildJsonObject {
+                putJsonObject("extensionStores") { put("nodes", JsonArray(extensionStoreUrls.map { buildJsonObject { put("indexUrl", it) } })) }
+            }
+            "KarasuAddExtensionStore" in query ->
+                addExtensionStore(variables["indexUrl"]!!.jsonPrimitive.content, device) ?: return graphqlError("mock: repository not reachable")
+            "KarasuRemoveExtensionStore" in query -> removeExtensionStore(variables["indexUrl"]!!.jsonPrimitive.content, device)
             "KarasuCreateCategory" in query -> createCategory(variables["name"]!!.jsonPrimitive.content, device)
             "KarasuRenameCategory" in query -> renameCategory(variables["id"]!!.jsonPrimitive.int, variables["name"]!!.jsonPrimitive.content, device)
             "KarasuUpdateMangaCategories" in query -> updateMangaCategories(variables, device)
@@ -570,6 +577,24 @@ class MockSuwayomiServer(
             else -> return reply(200, buildJsonObject { put("errors", buildJsonArray { add(buildJsonObject { put("message", "mock: unknown operation") }) }) })
         }
         return reply(200, buildJsonObject { put("data", data) })
+    }
+
+    private fun graphqlError(message: String) =
+        reply(200, buildJsonObject { put("errors", buildJsonArray { add(buildJsonObject { put("message", message) }) }) })
+
+    /** Like the server: a repository that cannot be fetched is not added, and one it already has changes nothing. */
+    private fun addExtensionStore(indexUrl: String, device: String): JsonObject? {
+        if (indexUrl !in extensionStoreUrls) {
+            if (!RepoHost.answers(indexUrl)) return null
+            extensionStoreUrls += indexUrl
+            record(device, "EXTENSION_REPO", "repo:$indexUrl", "SET", buildJsonObject { put("indexUrl", indexUrl) })
+        }
+        return buildJsonObject { putJsonObject("addExtensionStore") { putJsonObject("extensionStore") { put("indexUrl", indexUrl) } } }
+    }
+
+    private fun removeExtensionStore(indexUrl: String, device: String): JsonObject {
+        if (extensionStoreUrls.remove(indexUrl)) record(device, "EXTENSION_REPO", "repo:$indexUrl", "REMOVE", null)
+        return buildJsonObject { putJsonObject("removeExtensionStore") { put("clientMutationId", JsonNull) } }
     }
 
     private fun categoryNodes() = JsonArray(categories.sortedBy { it.order }.map(::categoryJson))

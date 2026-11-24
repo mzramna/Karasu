@@ -184,6 +184,11 @@ sai do servidor com "enviar exclusões locais" (`pushLocalDeletions`); removido 
 exclusões remotas" (`applyRemoteDeletions`). Se o outro lado fez algo mais novo (log de operações, entidade
 `EXTENSION_REPO`, chave `repo:<indexUrl>`), o horário decide e o repositório é recriado. O backup não muda.
 
+Testes: `SyncExtensionReposLiveTest` (12 cenários nos dois sentidos: adicionar, remover com e sem as opções, readicionar
+depois da remoção, dois aparelhos, repositório que o servidor não consegue ler). Roda no mock a cada build e contra o
+servidor real (H2 e PostgreSQL) em `scripts/live-sync-test.sh`; os repositórios dos testes vêm de um `RepoHost` local, que o
+servidor consulta na mesma máquina.
+
 ## Renomear categoria
 
 O app lembra qual categoria local é qual categoria do servidor e o nome combinado. Renomeou num lado: o outro

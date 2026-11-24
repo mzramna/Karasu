@@ -25,6 +25,11 @@ import karasu.domain.chapter.ChapterRepository
 import karasu.domain.chapter.interactor.GetChapter
 import karasu.domain.chapter.interactor.UpdateChapter
 import karasu.domain.chapter.models.ChapterUpdate
+import karasu.domain.extension.repo.ExtensionRepoRepository
+import karasu.domain.extension.repo.interactor.CreateExtensionRepo
+import karasu.domain.extension.repo.interactor.DeleteExtensionRepo
+import karasu.domain.extension.repo.interactor.GetExtensionRepo
+import karasu.domain.extension.repo.model.ExtensionRepo
 import karasu.domain.history.HistoryRepository
 import karasu.domain.history.interactor.GetHistory
 import karasu.domain.history.interactor.UpsertHistory
@@ -33,8 +38,13 @@ import karasu.domain.manga.interactor.GetManga
 import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSources
 import karasu.domain.manga.models.MergedMangaSource
+import karasu.domain.operations.OpAction
+import karasu.domain.operations.OpEntity
 import karasu.domain.operations.OperationLog
 import karasu.domain.suwayomi.ServerPreferences
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 
@@ -57,6 +67,9 @@ object Live {
 
     /** Always true now: there is always something to talk to. Kept so the tests read the same as before. */
     val isConfigured: Boolean get() = true
+
+    /** Where the repositories of the scenarios live (see [RepoHost]); the server fetches them from here too. */
+    val repos: RepoHost by lazy { RepoHost() }
 
     /** The server's own source: the seeded works are all on it. */
     const val SOURCE_ID = 0L
@@ -117,6 +130,33 @@ class InMemoryMergedRepository : MergedMangaRepository {
     }
 }
 
+/** The extension repositories table of a device, in memory. */
+class InMemoryExtensionRepoRepository : ExtensionRepoRepository {
+    private val rows = MutableStateFlow<List<ExtensionRepo>>(emptyList())
+
+    override fun subscribeAll(): Flow<List<ExtensionRepo>> = rows
+    override suspend fun getAll(): List<ExtensionRepo> = rows.value
+    override suspend fun getRepository(baseUrl: String): ExtensionRepo? = rows.value.firstOrNull { it.baseUrl == baseUrl }
+    override suspend fun getRepositoryBySigningKeyFingerprint(fingerprint: String): ExtensionRepo? =
+        rows.value.firstOrNull { it.signingKeyFingerprint == fingerprint }
+
+    override fun getCount(): Flow<Int> = rows.map { it.size }
+
+    override suspend fun insertRepository(baseUrl: String, name: String, shortName: String?, website: String, signingKeyFingerprint: String) {
+        rows.value = rows.value + ExtensionRepo(baseUrl, name, shortName, website, signingKeyFingerprint)
+    }
+
+    override suspend fun upsertRepository(baseUrl: String, name: String, shortName: String?, website: String, signingKeyFingerprint: String) {
+        rows.value = rows.value.filterNot { it.baseUrl == baseUrl } + ExtensionRepo(baseUrl, name, shortName, website, signingKeyFingerprint)
+    }
+
+    override suspend fun replaceRepository(newRepo: ExtensionRepo) = upsertRepository(newRepo)
+
+    override suspend fun deleteRepository(baseUrl: String) {
+        rows.value = rows.value.filterNot { it.baseUrl == baseUrl }
+    }
+}
+
 /**
  * One phone or tablet: the local database (works, chapters, categories, history, merged sources,
  * downloads) held in memory, behind the same interactors the app uses — the writing ones are the real
@@ -155,6 +195,7 @@ class LiveDevice(
     private val history = mutableMapOf<Long, History>()
     val downloaded = mutableSetOf<Long>()
     val mergedRepository = InMemoryMergedRepository()
+    private val repoRepository = InMemoryExtensionRepoRepository()
 
     private var nextId = 1L
 
@@ -172,6 +213,14 @@ class LiveDevice(
     private val deleteCategories = DeleteCategories(categoryRepository, operations)
     private val setMangaCategories = SetMangaCategories(mangaRepository, categoryRepository, operations)
     private val mergedSources = MergedSources(mergedRepository, operations)
+    private val getExtensionRepo = GetExtensionRepo(repoRepository)
+    private val deleteExtensionRepo = DeleteExtensionRepo(repoRepository, operations)
+
+    /**
+     * Adding a repository fetches its index over https from the internet; here it is fetched from [Live.repos]
+     * instead, and what is written and recorded is what the real interactor writes and records.
+     */
+    private val createExtensionRepo = mockk<CreateExtensionRepo>()
 
     // --- readers and the rest, answering from the same state
     private val getManga = mockk<GetManga>(relaxed = true)
@@ -222,6 +271,19 @@ class LiveDevice(
         }
         coEvery { mangaRepository.setCategories(any(), any()) } answers {
             links[firstArg<Long>()] = secondArg<List<Long>>().toMutableSet()
+        }
+
+        coEvery { createExtensionRepo.await(any()) } coAnswers {
+            val base = firstArg<String>().trim().trimEnd('/').removeSuffix("/repo.json").trimEnd('/')
+            when {
+                repoRepository.getRepository(base) != null -> CreateExtensionRepo.Result.RepoAlreadyExists
+                !RepoHost.answers("$base/repo.json") -> CreateExtensionRepo.Result.InvalidUrl
+                else -> {
+                    repoRepository.insertRepository(base, "Repository", null, "https://example.test", "key-$base")
+                    operations.record(OpEntity.EXTENSION_REPO, OpAction.SET, name = base)
+                    CreateExtensionRepo.Result.Success
+                }
+            }
         }
 
         // readers
@@ -348,6 +410,15 @@ class LiveDevice(
         inOrder.forEachIndexed { index, source -> mergedSources.reorder(mangaOf(n).id!!, source, index + 1) }
     }
 
+    // --- extension repositories (the base url is the index url without "/repo.json")
+
+    /** What the user does in the repositories screen: types the address and confirms. */
+    fun addRepo(base: String): CreateExtensionRepo.Result = runBlocking { createExtensionRepo.await("$base/repo.json") }
+
+    fun removeRepo(base: String) = runBlocking { deleteExtensionRepo.await(base) }
+
+    fun repoBases(): Set<String> = runBlocking { getExtensionRepo.getAll().mapTo(mutableSetOf()) { it.baseUrl } }
+
     // --- downloads
     fun download(n: Int, k: Int) {
         downloaded += chapter(n, k).id!!
@@ -365,7 +436,7 @@ class LiveDevice(
         SyncSuwayomiServer(
             api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
             setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
-            updateCategories, operations, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
+            updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
         ).await()
     }
 }

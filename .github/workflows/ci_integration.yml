@@ -2,7 +2,7 @@ name: CI Integration
 
 # Roda o app contra um Suwayomi-Server de verdade (o fork) em H2 e em PostgreSQL: categorias, progresso,
 # histórico, fontes mescladas, downloads/exclusões, backups e política, nos dois sentidos.
-# Os testes são SyncLiveBidirectionalTest e ServerSyncApiLiveTest; scripts/live-sync-test.sh sobe o servidor.
+# Os testes são SyncLiveBidirectionalTest, ServerSyncApiLiveTest e SyncExtensionReposLiveTest; scripts/live-sync-test.sh sobe o servidor.
 on:
   push:
     branches: ["**"]
@@ -36,7 +36,7 @@ permissions:
 env:
   # Enquanto o fork do servidor não estiver no master, testamos a branch com o endpoint de histórico.
   # Depois de mesclar, troque por "master".
-  DEFAULT_SERVER_REF: claude/suwayomi-sync
+  DEFAULT_SERVER_REF: claude/extension-repo-sync
 
 jobs:
   live:
