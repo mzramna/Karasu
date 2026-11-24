@@ -6,7 +6,7 @@
 #   SERVER_JAR=... PGHOST=localhost PGUSER=postgres PGPASSWORD=x scripts/live-sync-test.sh postgres
 #
 # The server is started once to create its schema, stopped, seeded (scripts/live/seed.py), started again
-# with Basic Auth (work /live/m30 is reserved for ServerSyncApiLiveTest, m01..m40 for the bidirectional tests), and the tests in SyncLiveBidirectionalTest / ServerSyncApiLiveTest run against it.
+# with Basic Auth (work /live/m30 is reserved for ServerSyncApiLiveTest, m01..m40 for the bidirectional tests), and the tests in SyncLiveBidirectionalTest / ServerSyncApiLiveTest / SyncShelfLiveTest run against it.
 set -euo pipefail
 
 DB="${1:-h2}"
@@ -75,5 +75,5 @@ curl -fsS -u "$USER_NAME:$USER_PASS" "http://127.0.0.1:$PORT/api/v1/karasu/healt
 cd "$HERE/.."
 KARASU_LIVE_URL="http://127.0.0.1:$PORT" KARASU_LIVE_USER="$USER_NAME" KARASU_LIVE_PASS="$USER_PASS" \
 KARASU_LIVE_MANGA_URL=/live/m30 KARASU_LIVE_DOWNLOADED=/live/m30/c2 KARASU_LIVE_MISSING=/live/m30/c3 \
-  ./gradlew :app:testStandardDebugUnitTest --tests '*SyncLiveBidirectionalTest' --tests '*ServerSyncApiLiveTest' \
+  ./gradlew :app:testStandardDebugUnitTest --tests '*SyncLiveBidirectionalTest' --tests '*ServerSyncApiLiveTest' --tests '*SyncShelfLiveTest' \
   ${GRADLE_ARGS:-} --console=plain
