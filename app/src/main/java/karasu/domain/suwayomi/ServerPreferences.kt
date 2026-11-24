@@ -121,6 +121,18 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
     fun lastOperationSeq() = preferenceStore.getLong(Preference.appStateKey("suwayomi_last_operation_seq"), 0L)
 
     /** This device's own operation log, as JSON (see `OperationLog`). */
+    /**
+     * The last server sequence this device had fully applied when a sync finished without errors. It is what the next
+     * pull sends as `ack`: the server forgets an operation only when every device has acknowledged it.
+     */
+    fun operationAckSeq() = preferenceStore.getLong(Preference.appStateKey("suwayomi_operation_ack_seq"), 0L)
+
+    /** Forgets what was agreed on, so the next sync reconciles by state alone and removes nothing (see `resetRequired`). */
+    fun clearAgreedState() {
+        listOf(mergedSnapshot(), extensionRepoSnapshot(), categoryLinksSnapshot(), progressSnapshot(), historySnapshot())
+            .forEach { it.set("") }
+    }
+
     fun operationLog() = preferenceStore.getString(Preference.appStateKey("suwayomi_operation_log"), "")
 
     /** `local category id -> {server id, agreed name}`: how a rename is told from a new category. */

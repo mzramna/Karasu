@@ -111,6 +111,8 @@ class SyncSuwayomiServer(
         val reposPushed: Int = 0,
         val reposRemovedLocal: Int = 0,
         val reposRemovedRemote: Int = 0,
+        /** The server's log no longer reached back to this device, so this run reconciled by state alone. */
+        val logReset: Boolean = false,
         /** Parts the server answered with an error. Reaching the server at all is a thrown exception. */
         val errors: List<String> = emptyList(),
     ) {
@@ -132,6 +134,8 @@ class SyncSuwayomiServer(
         summary = Summary()
         removedBecauseOfServer.clear()
         remoteLatest.clear()
+        remoteAction.clear()
+        serverAcknowledges = false
         opsAvailable = false
         clockOffset = 0
 
@@ -145,6 +149,8 @@ class SyncSuwayomiServer(
         }
         part("extension repos") { syncExtensionRepos() }
         part("operation log") { publishOperations() }
+        // Everything this run read has been applied: only now may the server forget it.
+        if (opsAvailable && summary.errors.isEmpty()) preferences.operationAckSeq().set(pulledSeq)
         return summary
     }
 
@@ -168,6 +174,21 @@ class SyncSuwayomiServer(
     /** Latest change per key made by someone else (the web, another device), in the server's clock. */
     private val remoteLatest = mutableMapOf<String, Long>()
 
+    /** What that latest change was (SET or REMOVE), per key: the log says what happened, not just when. */
+    private val remoteAction = mutableMapOf<String, String>()
+
+    /** True when the server speaks log version 3: it acknowledges, compacts and understands gzip. */
+    private var serverAcknowledges = false
+
+    /**
+     * Where this device's cursor stood when the run began. At 0 the first page is the server's whole retained history,
+     * which says nothing about what happened *after this device last looked*; above 0 every operation read is news.
+     */
+    private var cursorAtStart = 0L
+
+    /** The highest server sequence read in this run; it becomes the acknowledgement once the run ends without errors. */
+    private var pulledSeq = 0L
+
     /** False for a server from before the log existed: conflicts then fall back to the older rules. */
     private var opsAvailable = false
 
@@ -184,18 +205,39 @@ class SyncSuwayomiServer(
     private suspend fun pullOperations() {
         val mine = preferences.ensureDeviceId()
         var cursor = preferences.lastOperationSeq().get()
+        cursorAtStart = cursor
+        val ack = preferences.operationAckSeq().get()
         try {
             while (true) {
-                val page = api.operations(cursor, OPERATIONS_PAGE)
+                // the acknowledgement rides on the first page only: it is about the previous run, not this one
+                val page = api.operations(cursor, OPERATIONS_PAGE, ack = if (serverAcknowledges) null else ack.takeIf { it > 0 })
                 opsAvailable = true
+                if (page.minSeq != null) serverAcknowledges = true
                 if (page.serverTime > 0) clockOffset = page.serverTime - operations.now()
-                page.operations.filter { it.deviceId != mine }.forEach { remoteLatest.merge(it.key, it.ts, ::maxOf) }
+                if (page.resetRequired) {
+                    // The server dropped operations this device never saw: the log cannot tell what happened, so the
+                    // state decides. With nothing agreed on, the sync joins both sides and removes nothing.
+                    Logger.w { "Suwayomi sync: the server's log no longer reaches back far enough, reconciling by state" }
+                    preferences.clearAgreedState()
+                    cursor = page.lastSeq
+                    pulledSeq = cursor
+                    preferences.lastOperationSeq().set(cursor)
+                    summary = summary.copy(logReset = true)
+                    return
+                }
+                page.operations.filter { it.deviceId != mine }.forEach {
+                    if (remoteLatest[it.key]?.let { known -> it.ts >= known } != false) {
+                        remoteLatest[it.key] = it.ts
+                        remoteAction[it.key] = it.action
+                    }
+                }
                 if (page.operations.size < OPERATIONS_PAGE || page.lastSeq <= cursor) {
                     cursor = maxOf(cursor, page.lastSeq)
                     break
                 }
                 cursor = page.lastSeq
             }
+            pulledSeq = cursor
             preferences.lastOperationSeq().set(cursor)
         } catch (e: ServerApiException) {
             if (e.code != 404 && e.code != 405) throw e // an old server simply has no log
@@ -229,8 +271,9 @@ class SyncSuwayomiServer(
         val device = preferences.ensureDeviceId()
         val categoryMap = loadCategoryMap()
         val out = pending.mapNotNull { describe(it, device, categoryMap) }
-        api.publishOperations(out)
-        operations.markPublished(pending.map { it.id })
+        api.publishOperations(out, gzip = serverAcknowledges)
+        // the server has them now, and its log is the record from here on
+        operations.remove(pending.map { it.id })
         operations.prune()
     }
 
@@ -525,6 +568,32 @@ class SyncSuwayomiServer(
         .removeSuffix("/index.min.json").removeSuffix("/index.json").removeSuffix("/index.pb").removeSuffix("/repo.json")
         .trimEnd('/')
 
+    /**
+     * The server's own log of a repository, whatever way it spells the address: its newest operation, if the log has
+     * one and it is a removal.
+     */
+    private fun remoteRepoOp(base: String): Pair<String, Long>? =
+        remoteLatest.keys.filter { it.startsWith("repo:") && normalizeRepoUrl(it.removePrefix("repo:")) == base }
+            .maxByOrNull { remoteLatest.getValue(it) }?.let { remoteAction.getValue(it) to remoteLatest.getValue(it) }
+
+    /** Removed on the server (the web, another device) after anything this device did with it: no snapshot needed to believe it. */
+    private fun removedOnServerByLog(base: String): Boolean {
+        if (!opsAvailable || cursorAtStart == 0L) return false
+        val (action, ts) = remoteRepoOp(base) ?: return false
+        if (action != OpAction.REMOVE) return false
+        val mine = operations.lastOp(OpEntity.EXTENSION_REPO, base) ?: return true
+        return mine.ts + clockOffset <= ts
+    }
+
+    /** Removed on this device after anything the server did with it. */
+    private fun removedHereByLog(base: String, indexUrl: String): Boolean {
+        if (!opsAvailable) return false
+        val mine = operations.lastOp(OpEntity.EXTENSION_REPO, base) ?: return false
+        if (mine.action != OpAction.REMOVE) return false
+        val remote = remoteRepoOp(base) ?: return true
+        return remote.first == OpAction.REMOVE || mine.ts + clockOffset > remote.second
+    }
+
     private fun loadRepoSnapshot(): Set<String>? {
         val raw = preferences.extensionRepoSnapshot().get()
         if (raw.isBlank()) return null
@@ -580,7 +649,16 @@ class SyncSuwayomiServer(
             .maxByOrNull { remoteLatest.getValue(it) } ?: "repo:$base/repo.json"
 
         for (base in localByBase.keys - remoteByBase.keys) {
-            if (snapshot == null || base !in snapshot) {
+            if (removedOnServerByLog(base)) {
+                // the log says it: someone removed it there after anything this device did with it
+                if (preferences.applyRemoteDeletions().get()) {
+                    deleteExtensionRepo.await(localByBase.getValue(base))
+                    local -= base
+                    removedLocal++
+                } else {
+                    // kept, as every deletion not applied; the sync does not push it back either
+                }
+            } else if (snapshot == null || base !in snapshot) {
                 addRemote(base)
             } else if (winner(remoteKey(base), operations.latest(OpEntity.EXTENSION_REPO, name = base)) == Side.LOCAL) {
                 addRemote(base) // removed on the server, but this device re-added it later
@@ -592,7 +670,14 @@ class SyncSuwayomiServer(
         }
         for (base in remoteByBase.keys - localByBase.keys) {
             val indexUrl = remoteByBase.getValue(base)
-            if (snapshot == null || base !in snapshot) {
+            if (removedHereByLog(base, indexUrl)) {
+                // the log says it: this device removed it after anything the server did with it
+                if (preferences.pushLocalDeletions().get()) {
+                    api.removeExtensionStore(indexUrl)
+                    remote -= base
+                    removedRemote++
+                }
+            } else if (snapshot == null || base !in snapshot) {
                 addLocal(base, indexUrl)
             } else if (winner("repo:$indexUrl", operations.latest(OpEntity.EXTENSION_REPO, name = base)) == Side.REMOTE) {
                 addLocal(base, indexUrl) // removed here, but the server re-added it later

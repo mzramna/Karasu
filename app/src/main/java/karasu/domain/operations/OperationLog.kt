@@ -105,6 +105,15 @@ class OperationLog(
         synchronized(lock) { save(load().map { if (it.id in ids) it.copy(published = true) else it }) }
     }
 
+    /** Forgets operations the server confirmed (HTTP 200 on publish): from then on the server's log is their record. */
+    fun remove(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        synchronized(lock) { save(load().filterNot { it.id in ids }) }
+    }
+
+    /** The most recent operation this device recorded on the thing, or null. */
+    fun lastOp(entity: String, name: String): LocalOp? = all().filter { it.entity == entity && it.name == name }.maxByOrNull { it.ts }
+
     /** When this device last did something to the thing, or null if nothing is on record. */
     fun latest(
         entity: String,

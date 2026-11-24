@@ -277,15 +277,29 @@ class ServerSyncApi(
     // region operation log
 
     /** Operations of the server's log after [afterSeq], oldest first, plus the server's clock. */
-    suspend fun operations(afterSeq: Long, limit: Int = 1000): OperationsPage =
-        getJson("operations", "afterSeq" to afterSeq.toString(), "limit" to limit.toString())
+    suspend fun operations(afterSeq: Long, limit: Int = 1000, ack: Long? = null): OperationsPage =
+        if (ack == null) {
+            getJson("operations", "afterSeq" to afterSeq.toString(), "limit" to limit.toString())
+        } else {
+            // [ack] says "everything up to here is applied here": the server may forget it once every device says so
+            getJson("operations", "afterSeq" to afterSeq.toString(), "limit" to limit.toString(), "ack" to ack.toString())
+        }
 
-    /** Publishes what this device did, with the time it did it. Idempotent by operation id. */
-    suspend fun publishOperations(operations: List<ServerOperation>): PublishResult {
+    /**
+     * Publishes what this device did, with the time it did it. Idempotent by operation id. With [gzip] the body is
+     * compressed (servers from opsVersion 3; an older one would not understand it).
+     */
+    suspend fun publishOperations(operations: List<ServerOperation>, gzip: Boolean = false): PublishResult {
         if (operations.isEmpty()) return PublishResult()
         val body = json.encodeToString(PublishOperationsBody.serializer(), PublishOperationsBody(operations))
         val answer = transport.execute { base ->
-            Request.Builder().url(base.endpoint("operations")).post(body.toRequestBody(JSON_MEDIA)).build()
+            val builder = Request.Builder().url(base.endpoint("operations"))
+            if (gzip) {
+                val packed = java.io.ByteArrayOutputStream().also { out -> java.util.zip.GZIPOutputStream(out).use { it.write(body.toByteArray()) } }
+                builder.header("Content-Encoding", "gzip").post(packed.toByteArray().toRequestBody(JSON_MEDIA))
+            } else {
+                builder.post(body.toRequestBody(JSON_MEDIA))
+            }.build()
         }
         return answer.response.use { it.decode<PublishResult>() }
     }

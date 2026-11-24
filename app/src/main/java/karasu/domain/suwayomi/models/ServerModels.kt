@@ -36,6 +36,8 @@ data class ServerHealth(
     val status: String = "",
     val serverVersion: String = "",
     val apiVersion: Int = 0,
+    /** 3 and up: the log has acknowledgements, compaction and `resetRequired` (older servers: 0 or 2). */
+    val opsVersion: Int = 0,
     val database: ServerDatabase = ServerDatabase(),
     val storage: ServerStorage = ServerStorage(),
 )
@@ -182,6 +184,10 @@ data class OperationsPage(
     val lastSeq: Long = 0,
     /** The server's clock when it answered, to correct this device's clock against. */
     val serverTime: Long = 0,
+    /** The oldest sequence the server still holds; null from a server that does not acknowledge (before opsVersion 3). */
+    val minSeq: Long? = null,
+    /** This device missed operations the server has already dropped: it must reconcile by state, not by the log. */
+    val resetRequired: Boolean = false,
 )
 
 @Serializable

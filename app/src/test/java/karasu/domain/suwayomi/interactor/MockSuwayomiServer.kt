@@ -252,6 +252,13 @@ class MockSuwayomiServer(
     private fun append(op: JsonObject): Boolean {
         val id = op["id"]!!.jsonPrimitive.content
         if (!operationIds.add(id)) return false
+        if (opsVersion >= 3) {
+            val key = op["key"]!!.jsonPrimitive.content
+            val ts = op["ts"]!!.jsonPrimitive.long
+            // logical compaction: only the latest word on a target is worth keeping; an older late arrival is a duplicate
+            if (operations.any { it.json["key"]!!.jsonPrimitive.content == key && it.json["ts"]!!.jsonPrimitive.long > ts }) return false
+            operations.removeAll { it.json["key"]!!.jsonPrimitive.content == key && it.json["ts"]!!.jsonPrimitive.long <= ts }
+        }
         val seq = nextSeq++
         operations += Op(seq, JsonObject(op + ("seq" to JsonPrimitive(seq))))
         return true
@@ -286,8 +293,11 @@ class MockSuwayomiServer(
             route == "deletions" && method == "POST" -> deletionsPost(body, device)
             route == "deletions" && method == "GET" -> deletionsGet(query["afterId"]?.toIntOrNull() ?: 0)
             route == "operations" && !operationLogEnabled -> reply(404, error("no such route: $method $route"))
-            route == "operations" && method == "GET" -> operationsGet(query)
-            route == "operations" && method == "POST" -> operationsPost(body)
+            route == "operations" && method == "GET" -> operationsGet(query, device)
+            route == "operations" && method == "POST" -> operationsPost(
+                if (req.headers["content-encoding"] == "gzip") java.util.zip.GZIPInputStream(body.inputStream()).readBytes().also { gzipPosts++ } else body,
+                device,
+            )
             else -> reply(404, error("no such route: $method $route"))
         }
     }
@@ -531,26 +541,64 @@ class MockSuwayomiServer(
 
     // --- operation log
 
-    private fun operationsGet(q: Map<String, String>): Reply {
+    /** Log version 3 (the default) acknowledges, compacts and understands gzip; 2 is the log as it was before. */
+    @Volatile var opsVersion = 3
+
+    /** How many publishes arrived compressed. */
+    @Volatile var gzipPosts = 0
+
+    /** What each device has acknowledged: the server may forget what every device acknowledged. */
+    private val acks = mutableMapOf<String, Long>()
+
+    /** The next device that asks is told it missed operations the server already dropped. */
+    @Volatile var resetNext = false
+
+    /** The `ack` values the app sent, in order (null when it sent none). */
+    val ackRequests = java.util.concurrent.CopyOnWriteArrayList<Long?>()
+
+    private fun operationsGet(q: Map<String, String>, device: String): Reply {
         val after = q["afterSeq"]?.toLongOrNull() ?: 0
         val limit = (q["limit"]?.toIntOrNull() ?: 1000).coerceIn(1, 5000)
         val entity = q["entity"]?.takeIf { it.isNotEmpty() }
+        val v3 = opsVersion >= 3
+        var reset = false
+        if (v3 && device.isNotEmpty()) {
+            val ack = q["ack"]?.toLongOrNull()
+            ackRequests += ack
+            acks[device] = maxOf(acks[device] ?: 0L, ack ?: 0L)
+            if (resetNext) {
+                resetNext = false
+                reset = true
+            }
+            pruneAcknowledged()
+        }
         val page = operations.filter { it.seq > after && (entity == null || it.json["entity"]!!.jsonPrimitive.content == entity) }.take(limit)
         return reply(
             200,
             buildJsonObject {
-                put("operations", JsonArray(page.map { it.json }))
-                put("lastSeq", page.lastOrNull()?.seq ?: after)
+                put("operations", JsonArray(if (reset) emptyList() else page.map { it.json }))
+                put("lastSeq", if (reset) nextSeq - 1 else page.lastOrNull()?.seq ?: after)
                 put("serverTime", clock())
+                if (v3) {
+                    put("minSeq", operations.minOfOrNull { it.seq } ?: nextSeq)
+                    put("resetRequired", reset)
+                }
             },
         )
     }
 
-    private fun operationsPost(body: ByteArray): Reply {
+    /** Everything every known device acknowledged is gone: the server's log only holds what someone has yet to see. */
+    private fun pruneAcknowledged() {
+        val floor = acks.values.minOrNull() ?: return
+        operations.removeAll { it.seq <= floor }
+    }
+
+    private fun operationsPost(body: ByteArray, device: String): Reply {
         val ops = JSON.parseToJsonElement(String(body)).jsonObject["operations"]?.jsonArray ?: JsonArray(emptyList())
         var accepted = 0
         var duplicates = 0
         for (op in ops.map { it.jsonObject }) if (append(op)) accepted++ else duplicates++
+        if (opsVersion >= 3 && device.isNotEmpty()) acks.putIfAbsent(device, 0L)
         return reply(200, buildJsonObject { put("accepted", accepted); put("duplicates", duplicates) })
     }
 
