@@ -910,6 +910,8 @@
          still koreader_* on purpose — renaming them would reset every translation for no gain. -->
     <string name="koreader">Yatagarasu</string>
     <string name="koreader_summary">Send chapters to KOReader through a Yatagarasu server, and read progress back</string>
+    <string name="koreader_use_suwayomi">Use the Suwayomi server</string>
+    <string name="koreader_use_suwayomi_summary">Keep the shelf on the server set up in Suwayomi sync: its address, login and fallback address are used. The shelf address and key below are ignored</string>
     <string name="koreader_server_url">Yatagarasu address</string>
     <string name="koreader_server_url_hint">http://192.168.1.10:3000</string>
     <string name="koreader_api_key">API key</string>

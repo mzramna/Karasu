@@ -50,7 +50,24 @@ class SettingsKoreaderController : SettingsLegacyController() {
     override fun setupPreferenceScreen(screen: PreferenceScreen) = screen.apply {
         titleRes = MR.strings.koreader
 
-        editTextPreference(activity) {
+        // Declared first so the switch can show and hide them; assigned where they are built, below it.
+        lateinit var urlPreference: androidx.preference.Preference
+        lateinit var keyPreference: androidx.preference.Preference
+
+        switchPreference {
+            bindTo(koreaderPreferences.useSuwayomi())
+            titleRes = MR.strings.koreader_use_suwayomi
+            summaryRes = MR.strings.koreader_use_suwayomi_summary
+            onChange {
+                // The shelf's own address and key are not used on the server, so they are not offered.
+                val on = it as Boolean
+                urlPreference.isVisible = !on
+                keyPreference.isVisible = !on
+                KoreaderSyncJob.setupTask(context.applicationContext)
+                true
+            }
+        }
+        urlPreference = editTextPreference(activity) {
             bindTo(koreaderPreferences.serverUrl())
             titleRes = MR.strings.koreader_server_url
             summary = koreaderPreferences.serverUrl().get()
@@ -65,11 +82,13 @@ class SettingsKoreaderController : SettingsLegacyController() {
                 true
             }
         }
-        editTextPreference(activity) {
+        keyPreference = editTextPreference(activity) {
             bindTo(koreaderPreferences.apiKey())
             titleRes = MR.strings.koreader_api_key
             summaryRes = MR.strings.koreader_api_key_summary
         }
+        urlPreference.isVisible = !koreaderPreferences.useSuwayomi().get()
+        keyPreference.isVisible = !koreaderPreferences.useSuwayomi().get()
         preference {
             titleRes = MR.strings.koreader_test_connection
             onClick { testConnection() }
@@ -193,7 +212,7 @@ class SettingsKoreaderController : SettingsLegacyController() {
                     .onEach { summary = lastSyncSummary(context) }
                     .launchIn(viewScope)
                 onClick {
-                    if (koreaderPreferences.serverUrl().get().isBlank()) {
+                    if (!koreaderApi.isConfigured) {
                         context.toast(MR.strings.koreader_set_url_first)
                         return@onClick
                     }
@@ -220,7 +239,7 @@ class SettingsKoreaderController : SettingsLegacyController() {
     }
 
     private fun testConnection() {
-        if (koreaderPreferences.serverUrl().get().isBlank()) {
+        if (!koreaderApi.isConfigured) {
             activity?.toast(MR.strings.koreader_set_url_first)
             return
         }

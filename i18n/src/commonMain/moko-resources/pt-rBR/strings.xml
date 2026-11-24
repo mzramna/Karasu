@@ -94,6 +94,8 @@
     <!-- Yatagarasu -->
     <string name="koreader">Yatagarasu</string>
     <string name="koreader_summary">Envia capítulos para o KOReader através de um servidor Yatagarasu, e recebe o progresso de volta</string>
+    <string name="koreader_use_suwayomi">Usar o servidor Suwayomi</string>
+    <string name="koreader_use_suwayomi_summary">Guarda a estante no servidor configurado na sincronização com o Suwayomi: usa o endereço, o login e o endereço alternativo dele. O endereço e a chave da estante abaixo são ignorados</string>
     <string name="koreader_server_url">Endereço do Yatagarasu</string>
     <string name="koreader_server_url_hint">http://192.168.1.10:3000</string>
     <string name="koreader_api_key">Chave de API</string>

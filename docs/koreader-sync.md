@@ -201,3 +201,24 @@ them would silently reset every existing configuration.
 - Read state is a boolean; page-level progress does not come back into Karasu.
 - After restoring a backup the shelf still holds the old ids. Those entries stop matching and are
   ignored on pull, then pruned and re-uploaded under the new ids on the next sync.
+
+## Using the Suwayomi server as the shelf
+
+Instead of a separate container, the shelf can live on the Suwayomi-Server fork already used for sync. Turn on
+*Use the Suwayomi server* in the Yatagarasu settings: the address, login and fallback address of the Suwayomi sync
+settings are used, and the shelf address and API key are ignored.
+
+The routes are the same contract under `/api/v1/karasu/` with Basic Auth (the Suwayomi login), so the KOReader
+plugin must send that login too:
+
+| Container | Suwayomi server |
+| --- | --- |
+| `GET /api/health` | `GET /api/v1/karasu/health` |
+| `GET /api/shelf` | `GET /api/v1/karasu/shelf` |
+| `POST /api/shelf` (multipart `metadata` + `file`) | `POST /api/v1/karasu/shelf` (same parts) |
+| `DELETE /api/shelf/{chapterId}` | `DELETE /api/v1/karasu/shelf/{chapterId}` |
+| plugin downloads the CBZ | `GET /api/v1/karasu/shelf/{chapterId}/file` |
+| plugin reports "finished" | `PUT /api/v1/karasu/shelf/{chapterId}/read` with `{"read":true}` |
+
+Sending an id that is already on the shelf replaces the file and clears its read flag. The server does not mark
+the chapter read in Suwayomi: the app does, through the progress sync, once it sees `read: true` on the shelf.

@@ -280,6 +280,11 @@ class MockSuwayomiServer(
             route == "chapter/lookup" && method == "GET" -> chapterLookup(query)
             route == "manga/lookup" && method == "GET" -> mangaLookup(query)
             Regex("chapter/(\\d+)/archive").matches(route) -> archive(route.split('/')[1].toInt(), method)
+            route == "shelf" && method == "GET" -> shelfList()
+            route == "shelf" && method == "POST" -> shelfUpload(req)
+            Regex("shelf/[^/]+").matches(route) && method == "DELETE" -> shelfDelete(route.substringAfter('/'))
+            Regex("shelf/[^/]+/file").matches(route) && (method == "GET" || method == "HEAD") -> shelfFile(route.split('/')[1])
+            Regex("shelf/[^/]+/read").matches(route) && method == "PUT" -> shelfRead(route.split('/')[1], body)
             route == "backups/upload" && method == "POST" -> backupUpload(req, body, query["device"], device)
             route == "backups" && method == "GET" -> reply(200, JsonArray(backups.sortedByDescending { it.createdAt }.map(::backupInfo)))
             Regex("backups/[^/]+/download").matches(route) -> backupDownload(java.net.URLDecoder.decode(route.split('/')[1], "UTF-8"))
@@ -422,6 +427,68 @@ class MockSuwayomiServer(
         val backup = backups.firstOrNull { it.id == id } ?: return reply(404, error("Backup not found"))
         backups.remove(backup)
         record(device, "BACKUP", "backup:$id", "REMOVE", null)
+        return Reply(204, "application/json", ByteArray(0))
+    }
+
+    // --- Yatagarasu shelf (what the KOReader plugin and the app agree on; never touches the library or the log)
+
+    private class ShelfEntry(val chapterId: Long, val chapterUrl: String, val bytes: ByteArray, var read: Boolean = false)
+
+    private val shelf = sortedMapOf<Long, ShelfEntry>()
+
+    private fun shelfJson(e: ShelfEntry) = buildJsonObject { put("chapterId", e.chapterId); put("chapterUrl", e.chapterUrl); put("read", e.read) }
+
+    private fun shelfId(raw: String): Long? = raw.takeIf { Regex("[0-9]{1,18}").matches(it) }?.toLong()
+
+    private fun shelfList() = reply(200, buildJsonObject { put("entries", JsonArray(shelf.values.map(::shelfJson))) })
+
+    /** The parts of a multipart body: name -> content (the bytes between the headers and the next delimiter). */
+    private fun multipart(req: Request): Map<String, ByteArray>? {
+        val boundary = req.headers["content-type"].orEmpty().substringAfter("boundary=", "").trim('"')
+        if (boundary.isEmpty()) return null
+        val text = String(req.body, Charsets.ISO_8859_1) // one char per byte: offsets are valid for the bytes too
+        val parts = mutableMapOf<String, ByteArray>()
+        var at = text.indexOf("--$boundary")
+        while (at >= 0) {
+            val headEnd = text.indexOf("\r\n\r\n", at)
+            if (headEnd < 0) break
+            val name = Regex("name=\"([^\"]*)\"").find(text.substring(at, headEnd))?.groupValues?.get(1)
+            val end = text.indexOf("\r\n--$boundary", headEnd + 4)
+            if (end < 0) break
+            if (name != null) parts[name] = req.body.copyOfRange(headEnd + 4, end)
+            at = end + 2
+        }
+        return parts
+    }
+
+    private fun shelfUpload(req: Request): Reply {
+        val parts = multipart(req) ?: return reply(400, error("multipart expected"))
+        val meta = parts["metadata"]?.let { runCatching { JSON.parseToJsonElement(String(it)).jsonObject }.getOrNull() }
+            ?: return reply(400, error("metadata is required"))
+        val file = parts["file"]?.takeIf { it.isNotEmpty() } ?: return reply(400, error("file is required"))
+        val id = meta["chapterId"]?.jsonPrimitive?.content?.let(::shelfId) ?: return reply(400, error("chapterId is invalid"))
+        val url = meta["chapterUrl"]?.jsonPrimitive?.content ?: return reply(400, error("chapterUrl is required"))
+        val entry = ShelfEntry(id, url, file) // sending an id that is already there replaces it and zeroes `read`
+        shelf[id] = entry
+        return reply(201, shelfJson(entry))
+    }
+
+    private fun shelfDelete(raw: String): Reply {
+        val id = shelfId(raw) ?: return reply(400, error("invalid id"))
+        shelf.remove(id)
+        return Reply(204, "application/json", ByteArray(0))
+    }
+
+    private fun shelfFile(raw: String): Reply {
+        val entry = shelfId(raw)?.let { shelf[it] } ?: return reply(404, error("not on the shelf"))
+        return Reply(200, "application/vnd.comicbook+zip", entry.bytes, mapOf("Content-Disposition" to "attachment; filename=\"${entry.chapterId}.cbz\""))
+    }
+
+    private fun shelfRead(raw: String, body: ByteArray): Reply {
+        val entry = shelfId(raw)?.let { shelf[it] } ?: return reply(404, error("not on the shelf"))
+        val read = runCatching { JSON.parseToJsonElement(String(body)).jsonObject["read"]!!.jsonPrimitive.let { if (it.isString) null else it.booleanOrNull } }.getOrNull()
+            ?: return reply(400, error("read must be true or false"))
+        entry.read = read
         return Reply(204, "application/json", ByteArray(0))
     }
 

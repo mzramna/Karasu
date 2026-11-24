@@ -251,4 +251,48 @@ class ServerSyncApiTest {
             assertTrue(server.requests[2].body.contains(""""indexUrl":"https://b/repo.json""""))
         }
     }
+
+    // region Yatagarasu shelf
+
+    @Test
+    fun `the shelf is listed from the karasu shelf route`() = runBlocking {
+        FakeServer { reply("""{"entries":[{"chapterId":5,"chapterUrl":"/c/5","read":true},{"chapterId":6,"chapterUrl":"/c/6"}]}""") }.use { server ->
+            val entries = api(server).shelf()
+            assertEquals(listOf(5L, 6L), entries.map { it.chapterId })
+            assertEquals(listOf(true, false), entries.map { it.read })
+            assertEquals("/api/v1/karasu/shelf", server.requests.single().path)
+            assertEquals("GET", server.requests.single().method)
+        }
+    }
+
+    @Test
+    fun `an upload sends the metadata and the cbz as the two parts of one multipart request`() = runBlocking {
+        FakeServer { reply("""{"chapterId":9,"chapterUrl":"/c/9","read":false}""", 201) }.use { server ->
+            val cbz = ByteArray(300) { it.toByte() }
+            api(server).shelfUpload("""{"chapterId":9,"chapterUrl":"/c/9"}""", "chapter-9.cbz", cbz.size.toLong()) { cbz.inputStream() }
+
+            val request = server.requests.single()
+            assertEquals("POST", request.method)
+            assertEquals("/api/v1/karasu/shelf", request.path)
+            assertTrue(request.headers["content-type"]!!.startsWith("multipart/form-data"))
+            assertTrue(request.body.contains("""name="metadata""""), request.body.take(200))
+            assertTrue(request.body.contains("""{"chapterId":9,"chapterUrl":"/c/9"}"""))
+            assertTrue(request.body.contains("""name="file"; filename="chapter-9.cbz""""))
+        }
+    }
+
+    @Test
+    fun `taking a chapter off the shelf calls delete on its id, and a refusal is an error`() = runBlocking {
+        FakeServer { reply("", 204) }.use { server ->
+            api(server).shelfDelete(42)
+            assertEquals("DELETE", server.requests.single().method)
+            assertEquals("/api/v1/karasu/shelf/42", server.requests.single().path)
+        }
+        FakeServer { reply("""{"error":"no such chapter"}""", 400) }.use { server ->
+            val error = assertThrows(ServerApiException::class.java) { runBlocking { api(server).shelfDelete(1) } }
+            assertEquals(400, error.code)
+        }
+    }
+
+    // endregion
 }

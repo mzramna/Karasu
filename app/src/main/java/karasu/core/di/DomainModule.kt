@@ -93,7 +93,7 @@ import karasu.domain.track.interactor.InsertTrack
 fun domainModule() = module {
     factory { TrustExtension(get(), get()) }
 
-    single { KoreaderApi(get(), get()) }
+    single { KoreaderApi(get(), get(), get()) }
     factory { BuildRuleInputs(get(), get(), get(), get(), get(), get(), get()) }
     factory { PrepareShelfCbz(get(), get()) }
     factory { SyncKoreaderShelf(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
