@@ -4,6 +4,7 @@ import com.hippo.unifile.UniFile
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.network.parseAs
+import karasu.data.suwayomi.ServerSyncApi
 import karasu.domain.koreader.KoreaderPreferences
 import karasu.domain.koreader.models.KoreaderShelf
 import karasu.domain.koreader.models.KoreaderShelfEntry
@@ -27,11 +28,17 @@ import okio.source
 class KoreaderApi(
     private val preferences: KoreaderPreferences,
     private val network: NetworkHelper,
+    private val server: ServerSyncApi,
 ) {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    val isConfigured: Boolean get() = preferences.serverUrl().get().isNotBlank()
+    /** Whether the shelf lives on the Suwayomi server (its address, login and fallback) rather than in a container. */
+    val usesSuwayomi: Boolean get() = preferences.useSuwayomi().get()
+
+    /** What "feature off" looks like: no address entered, for whichever of the two places the shelf is in. */
+    val isConfigured: Boolean
+        get() = if (usesSuwayomi) server.isConfigured else preferences.serverUrl().get().isNotBlank()
 
     /**
      * Trailing slashes are the most common thing to paste wrong, and a doubled slash 404s on most
@@ -53,6 +60,10 @@ class KoreaderApi(
 
     /** Round-trips the shelf so the settings screen can say whether the URL and key actually work. */
     suspend fun check(): String {
+        if (usesSuwayomi) {
+            val result = server.health()
+            return "Suwayomi ${result.health.serverVersion} (${result.health.database.type})".take(HEALTH_SNIPPET)
+        }
         val request = Request.Builder().url(url("api/health")).headers(headers()).get().build()
         network.client.newCall(request).awaitSuccess().use { response ->
             return response.body.string().take(HEALTH_SNIPPET)
@@ -61,6 +72,7 @@ class KoreaderApi(
 
     /** Everything currently on the shelf, including which entries KOReader finished. */
     suspend fun shelf(): List<KoreaderShelfEntry> {
+        if (usesSuwayomi) return server.shelf()
         val request = Request.Builder().url(url("api/shelf")).headers(headers()).get().build()
         network.client.newCall(request).awaitSuccess().use { response ->
             return response.parseAs<KoreaderShelf>().entries
@@ -75,6 +87,10 @@ class KoreaderApi(
      * OOM would just look like a sync that never succeeds.
      */
     suspend fun upload(meta: KoreaderUpload, cbz: UniFile) {
+        if (usesSuwayomi) {
+            server.shelfUpload(json.encodeToString(meta), cbz.name ?: "${meta.chapterId}.cbz", cbz.length()) { cbz.openInputStream() }
+            return
+        }
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("metadata", json.encodeToString(meta))
@@ -90,6 +106,10 @@ class KoreaderApi(
     }
 
     suspend fun delete(chapterId: Long) {
+        if (usesSuwayomi) {
+            server.shelfDelete(chapterId)
+            return
+        }
         val request = Request.Builder()
             .url(url("api/shelf/$chapterId"))
             .headers(headers())

@@ -14,6 +14,7 @@ import androidx.work.WorkerParameters
 import co.touchlab.kermit.Logger
 import eu.kanade.tachiyomi.util.system.workManager
 import java.util.concurrent.TimeUnit
+import karasu.data.koreader.KoreaderApi
 import karasu.domain.koreader.KoreaderPreferences
 import karasu.domain.koreader.interactor.SyncKoreaderShelf
 import karasu.i18n.MR
@@ -38,7 +39,7 @@ class KoreaderSyncJob(context: Context, workerParams: WorkerParameters) :
 
     override suspend fun doWork(): Result {
         val preferences = Injekt.get<KoreaderPreferences>()
-        if (preferences.serverUrl().get().isBlank()) return Result.success()
+        if (!Injekt.get<KoreaderApi>().isConfigured) return Result.success()
 
         return try {
             val result = Injekt.get<SyncKoreaderShelf>().await()
@@ -91,7 +92,7 @@ class KoreaderSyncJob(context: Context, workerParams: WorkerParameters) :
         fun setupTask(context: Context, prefInterval: Int? = null) {
             val preferences = Injekt.get<KoreaderPreferences>()
             val interval = prefInterval ?: preferences.syncInterval().get()
-            if (interval <= 0 || preferences.serverUrl().get().isBlank()) {
+            if (interval <= 0 || !Injekt.get<KoreaderApi>().isConfigured) {
                 context.workManager.cancelUniqueWork(TAG_AUTO)
                 return
             }
@@ -134,7 +135,7 @@ class KoreaderSyncJob(context: Context, workerParams: WorkerParameters) :
 
         /** Manual sync ignores the interval but still respects the metered-connection choice. */
         fun startNow(context: Context) {
-            if (Injekt.get<KoreaderPreferences>().serverUrl().get().isBlank()) return
+            if (!Injekt.get<KoreaderApi>().isConfigured) return
             val request = OneTimeWorkRequestBuilder<KoreaderSyncJob>()
                 .addTag(TAG_MANUAL)
                 .setConstraints(constraints(Injekt.get()))

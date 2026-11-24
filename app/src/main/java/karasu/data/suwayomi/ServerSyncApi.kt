@@ -24,6 +24,8 @@ import karasu.domain.suwayomi.models.ChapterLookup
 import karasu.domain.suwayomi.models.DeletionEntry
 import karasu.domain.suwayomi.models.DeletionQueued
 import karasu.domain.suwayomi.models.DeletionRequest
+import karasu.domain.koreader.models.KoreaderShelf
+import karasu.domain.koreader.models.KoreaderShelfEntry
 import karasu.domain.suwayomi.models.DownloadPolicy
 import karasu.domain.suwayomi.models.HistoryBody
 import karasu.domain.suwayomi.models.HistoryEntry
@@ -274,6 +276,45 @@ class ServerSyncApi(
         return answer.response.use { it.decode<HistoryUpdated>().updated }
     }
 
+    // region Yatagarasu shelf
+
+    /** Everything on the server's shelf, including which entries KOReader finished. */
+    suspend fun shelf(): List<KoreaderShelfEntry> = getJson<KoreaderShelf>("shelf").entries
+
+    /**
+     * Puts one chapter on the shelf. [metadataJson] is the contract's `metadata` part; the CBZ is streamed from
+     * [open] (called once per address tried) rather than read into memory. Sending an id that is already there
+     * replaces it and clears its read flag, so a repeat after a failure is harmless.
+     */
+    suspend fun shelfUpload(metadataJson: String, fileName: String, length: Long, open: () -> InputStream) {
+        val answer = transport.execute { base ->
+            val file = object : RequestBody() {
+                override fun contentType() = CBZ_MEDIA
+                override fun contentLength() = length
+                override fun writeTo(sink: BufferedSink) {
+                    open().use { sink.writeAll(it.source()) }
+                }
+            }
+            val body = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("metadata", null, metadataJson.toRequestBody(JSON_MEDIA))
+                .addFormDataPart("file", fileName, file)
+                .build()
+            Request.Builder().url(base.endpoint("shelf")).post(body).build()
+        }
+        answer.response.use { it.requireSuccess() }
+    }
+
+    /** Takes a chapter off the shelf; one that is not there is not an error. */
+    suspend fun shelfDelete(chapterId: Long) {
+        val answer = transport.execute { base ->
+            Request.Builder().url(base.endpoint(listOf("shelf", chapterId.toString()))).delete().build()
+        }
+        answer.response.use { it.requireSuccess() }
+    }
+
+    // endregion
+
     // region operation log
 
     /** Operations of the server's log after [afterSeq], oldest first, plus the server's clock. */
@@ -433,6 +474,7 @@ class ServerSyncApi(
 
     companion object {
         private val AUTH_OR_MISSING = setOf(401, 403, 404)
+        private val CBZ_MEDIA = "application/vnd.comicbook+zip".toMediaType()
 
         /** Wires the transport to the user's settings and the app's shared HTTP client. */
         fun create(
