@@ -206,6 +206,7 @@ class SyncSuwayomiServer(
         val mine = preferences.ensureDeviceId()
         var cursor = preferences.lastOperationSeq().get()
         cursorAtStart = cursor
+        var resetting = false
         val ack = preferences.operationAckSeq().get()
         try {
             while (true) {
@@ -214,16 +215,15 @@ class SyncSuwayomiServer(
                 opsAvailable = true
                 if (page.minSeq != null) serverAcknowledges = true
                 if (page.serverTime > 0) clockOffset = page.serverTime - operations.now()
-                if (page.resetRequired) {
+                if (page.resetRequired && !resetting) {
                     // The server dropped operations this device never saw: the log cannot tell what happened, so the
-                    // state decides. With nothing agreed on, the sync joins both sides and removes nothing.
+                    // state decides. With nothing agreed on, the sync joins both sides and removes nothing. The pages
+                    // are still read to the end: the server keeps the warning until the acknowledgement reaches its head.
                     Logger.w { "Suwayomi sync: the server's log no longer reaches back far enough, reconciling by state" }
+                    resetting = true
+                    cursorAtStart = 0L
                     preferences.clearAgreedState()
-                    cursor = page.lastSeq
-                    pulledSeq = cursor
-                    preferences.lastOperationSeq().set(cursor)
                     summary = summary.copy(logReset = true)
-                    return
                 }
                 page.operations.filter { it.deviceId != mine }.forEach {
                     if (remoteLatest[it.key]?.let { known -> it.ts >= known } != false) {

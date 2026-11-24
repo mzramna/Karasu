@@ -36,7 +36,7 @@ permissions:
 env:
   # Enquanto o fork do servidor não estiver no master, testamos a branch com o endpoint de histórico.
   # Depois de mesclar, troque por "master".
-  DEFAULT_SERVER_REF: claude/extension-repo-sync
+  DEFAULT_SERVER_REF: claude/activity-log-truth
 
 jobs:
   live:
