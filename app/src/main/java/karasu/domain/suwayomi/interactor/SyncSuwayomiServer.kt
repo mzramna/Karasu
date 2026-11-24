@@ -18,6 +18,9 @@ import karasu.domain.category.models.CategoryUpdate
 import karasu.domain.chapter.interactor.GetChapter
 import karasu.domain.chapter.interactor.UpdateChapter
 import karasu.domain.chapter.models.ChapterUpdate
+import karasu.domain.extension.repo.interactor.CreateExtensionRepo
+import karasu.domain.extension.repo.interactor.DeleteExtensionRepo
+import karasu.domain.extension.repo.interactor.GetExtensionRepo
 import karasu.domain.history.interactor.GetHistory
 import karasu.domain.history.interactor.UpsertHistory
 import karasu.domain.operations.OpAction
@@ -84,6 +87,9 @@ class SyncSuwayomiServer(
     private val upsertHistory: UpsertHistory,
     private val updateCategories: UpdateCategories,
     private val operations: OperationLog,
+    private val getExtensionRepo: GetExtensionRepo,
+    private val createExtensionRepo: CreateExtensionRepo,
+    private val deleteExtensionRepo: DeleteExtensionRepo,
 ) {
 
     data class Summary(
@@ -101,13 +107,17 @@ class SyncSuwayomiServer(
         val deletionsPushed: Int = 0,
         val historyPulled: Int = 0,
         val historyPushed: Int = 0,
+        val reposPulled: Int = 0,
+        val reposPushed: Int = 0,
+        val reposRemovedLocal: Int = 0,
+        val reposRemovedRemote: Int = 0,
         /** Parts the server answered with an error. Reaching the server at all is a thrown exception. */
         val errors: List<String> = emptyList(),
     ) {
         val isIdle: Boolean
             get() = categoriesCreatedLocal + categoriesCreatedRemote + categoriesRenamedLocal + categoriesRenamedRemote + categoryLinksLocal + categoryLinksRemote +
                 chaptersPulled + chaptersPushed + mergedPulled + mergedPushed + deletionsApplied + deletionsPushed +
-                historyPulled + historyPushed == 0
+                historyPulled + historyPushed + reposPulled + reposPushed + reposRemovedLocal + reposRemovedRemote == 0
     }
 
     private var summary = Summary()
@@ -133,6 +143,7 @@ class SyncSuwayomiServer(
         if (preferences.syncCategories().get() || preferences.syncProgress().get() || preferences.syncHistory().get()) {
             part("library") { syncLibrary() }
         }
+        part("extension repos") { syncExtensionRepos() }
         part("operation log") { publishOperations() }
         return summary
     }
@@ -281,6 +292,10 @@ class SyncSuwayomiServer(
                         )
                     },
                 )
+            }
+            OpEntity.EXTENSION_REPO -> {
+                val indexUrl = "${op.name ?: return null}/repo.json"
+                build("repo:$indexUrl", if (op.action == OpAction.REMOVE) null else buildJsonObject { put("indexUrl", indexUrl) })
             }
             else -> null
         }
@@ -500,6 +515,97 @@ class SyncSuwayomiServer(
                 }
             }
         }
+    }
+
+    // endregion
+
+    // region extension repositories
+
+    private fun normalizeRepoUrl(url: String) = url.trim().trimEnd('/')
+        .removeSuffix("/index.min.json").removeSuffix("/index.json").removeSuffix("/index.pb").removeSuffix("/repo.json")
+        .trimEnd('/')
+
+    private fun loadRepoSnapshot(): Set<String>? {
+        val raw = preferences.extensionRepoSnapshot().get()
+        if (raw.isBlank()) return null
+        return try {
+            json.decodeFromString(ListSerializer(String.serializer()), raw).toSet()
+        } catch (e: Exception) {
+            Logger.w(e) { "Ignoring unreadable Suwayomi sync snapshot" }
+            null // unreadable = first run: a union, which loses nothing
+        }
+    }
+
+    /**
+     * Makes both sides know the same extension repositories. Adding is a union in both directions;
+     * a removal is only believed when the previous snapshot proves the repository was on both sides
+     * (the first run has no snapshot and removes nothing), and then only follows the options already
+     * used for deletions: [ServerPreferences.pushLocalDeletions] to remove it from the server,
+     * [ServerPreferences.applyRemoteDeletions] to remove it here. When the other side's removal
+     * collides with a newer action on this side, the operation log decides who is right.
+     */
+    private suspend fun syncExtensionRepos() {
+        val localByBase = getExtensionRepo.getAll().associate { normalizeRepoUrl(it.baseUrl) to it.baseUrl }
+        val remoteByBase = api.extensionStores().associateBy { normalizeRepoUrl(it) }
+        val snapshot = loadRepoSnapshot()
+
+        val local = localByBase.keys.toMutableSet()
+        val remote = remoteByBase.keys.toMutableSet()
+        val failed = mutableSetOf<String>()
+        var pulled = 0
+        var pushed = 0
+        var removedLocal = 0
+        var removedRemote = 0
+
+        suspend fun addLocal(base: String, indexUrl: String) {
+            when (createExtensionRepo.await(indexUrl)) {
+                CreateExtensionRepo.Result.Success -> { local += base; pulled++ }
+                CreateExtensionRepo.Result.RepoAlreadyExists -> local += base
+                else -> {
+                    // e.g. a repository the app cannot read: left out of the snapshot so the next run tries again
+                    Logger.w { "Suwayomi sync: could not add extension repo $indexUrl here" }
+                    failed += base
+                }
+            }
+        }
+
+        suspend fun addRemote(base: String) {
+            api.addExtensionStore("$base/repo.json")
+            remote += base
+            pushed++
+        }
+
+        // The server's own spelling of a repository it no longer has, as its log keeps it.
+        fun remoteKey(base: String) = remoteLatest.keys.filter { it.startsWith("repo:") && normalizeRepoUrl(it.removePrefix("repo:")) == base }
+            .maxByOrNull { remoteLatest.getValue(it) } ?: "repo:$base/repo.json"
+
+        for (base in localByBase.keys - remoteByBase.keys) {
+            if (snapshot == null || base !in snapshot) {
+                addRemote(base)
+            } else if (winner(remoteKey(base), operations.latest(OpEntity.EXTENSION_REPO, name = base)) == Side.LOCAL) {
+                addRemote(base) // removed on the server, but this device re-added it later
+            } else if (preferences.applyRemoteDeletions().get()) {
+                deleteExtensionRepo.await(localByBase.getValue(base))
+                local -= base
+                removedLocal++
+            }
+        }
+        for (base in remoteByBase.keys - localByBase.keys) {
+            val indexUrl = remoteByBase.getValue(base)
+            if (snapshot == null || base !in snapshot) {
+                addLocal(base, indexUrl)
+            } else if (winner("repo:$indexUrl", operations.latest(OpEntity.EXTENSION_REPO, name = base)) == Side.REMOTE) {
+                addLocal(base, indexUrl) // removed here, but the server re-added it later
+            } else if (preferences.pushLocalDeletions().get()) {
+                api.removeExtensionStore(indexUrl)
+                remote -= base
+                removedRemote++
+            }
+        }
+
+        val next = (local + remote - failed).sorted()
+        preferences.extensionRepoSnapshot().set(json.encodeToString(ListSerializer(String.serializer()), next))
+        summary = summary.copy(reposPulled = pulled, reposPushed = pushed, reposRemovedLocal = removedLocal, reposRemovedRemote = removedRemote)
     }
 
     // endregion

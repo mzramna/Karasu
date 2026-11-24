@@ -35,6 +35,28 @@ internal object ServerGraphQl {
         }
     """
 
+    const val EXTENSION_STORES = """
+        query KarasuExtensionStores {
+          extensionStores { nodes { indexUrl } }
+        }
+    """
+
+    const val ADD_EXTENSION_STORE = """
+        mutation KarasuAddExtensionStore(${'$'}indexUrl: String!) {
+          addExtensionStore(input: {indexUrl: ${'$'}indexUrl}) {
+            extensionStore { indexUrl }
+          }
+        }
+    """
+
+    const val REMOVE_EXTENSION_STORE = """
+        mutation KarasuRemoveExtensionStore(${'$'}indexUrl: String!) {
+          removeExtensionStore(input: {indexUrl: ${'$'}indexUrl}) {
+            clientMutationId
+          }
+        }
+    """
+
     const val UPDATE_MANGA_CATEGORIES = """
         mutation KarasuUpdateMangaCategories(${'$'}id: Int!, ${'$'}add: [Int!], ${'$'}remove: [Int!]) {
           updateMangaCategories(
@@ -116,6 +138,12 @@ data class RemoteManga(
 
 @Serializable
 internal data class Nodes<T>(val nodes: List<T> = emptyList())
+
+@Serializable
+internal data class ExtensionStoresData(val extensionStores: Nodes<RemoteExtensionStore>)
+
+@Serializable
+internal data class RemoteExtensionStore(val indexUrl: String)
 
 @Serializable
 internal data class CategoriesData(val categories: Nodes<RemoteCategory>)

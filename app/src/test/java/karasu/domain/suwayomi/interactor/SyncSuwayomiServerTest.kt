@@ -22,6 +22,11 @@ import karasu.domain.category.interactor.SetMangaCategories
 import karasu.domain.chapter.interactor.GetChapter
 import karasu.domain.chapter.interactor.UpdateChapter
 import karasu.domain.chapter.models.ChapterUpdate
+import karasu.data.suwayomi.ServerApiException
+import karasu.domain.extension.repo.interactor.CreateExtensionRepo
+import karasu.domain.extension.repo.interactor.DeleteExtensionRepo
+import karasu.domain.extension.repo.interactor.GetExtensionRepo
+import karasu.domain.extension.repo.model.ExtensionRepo
 import karasu.domain.history.interactor.GetHistory
 import karasu.domain.history.interactor.UpsertHistory
 import karasu.domain.category.interactor.UpdateCategories
@@ -57,13 +62,16 @@ class SyncSuwayomiServerTest {
     private val upsertHistory = mockk<UpsertHistory>(relaxed = true)
     private val updateCategories = mockk<UpdateCategories>(relaxed = true)
     private val operations = OperationLog(preferences)
+    private val getExtensionRepo = mockk<GetExtensionRepo>(relaxed = true)
+    private val createExtensionRepo = mockk<CreateExtensionRepo>(relaxed = true)
+    private val deleteExtensionRepo = mockk<DeleteExtensionRepo>(relaxed = true)
 
     private val manga = Manga.create("/m", "Title", 3L).apply { id = 1L }
 
     private fun sync() = SyncSuwayomiServer(
         api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
         setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
-        updateCategories, operations,
+        updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
     )
 
     private fun chapter(id: Long, url: String, read: Boolean = false, page: Int = 0): Chapter =
@@ -277,4 +285,89 @@ class SyncSuwayomiServerTest {
         coVerify(exactly = 0) { api.putHistory(any()) }
         coVerify(exactly = 0) { upsertHistory.await(any<Long>(), any(), any()) }
     }
+
+    // region extension repositories
+
+    private fun repo(baseUrl: String) = ExtensionRepo(baseUrl, "name", null, "https://site", "fingerprint")
+
+    private fun repos(local: List<String>, remote: List<String>, snapshot: String? = null) {
+        coEvery { getExtensionRepo.getAll() } returns local.map(::repo)
+        coEvery { api.extensionStores() } returns remote
+        coEvery { createExtensionRepo.await(any()) } returns CreateExtensionRepo.Result.Success
+        if (snapshot != null) preferences.extensionRepoSnapshot().set(snapshot)
+    }
+
+    @Test
+    fun `the first run unites the repositories and removes nothing`() = runBlocking {
+        preferences.applyRemoteDeletions().set(true)
+        preferences.pushLocalDeletions().set(true)
+        repos(local = listOf("https://a/repo"), remote = listOf("https://b/repo/repo.json"))
+
+        val summary = sync().await()
+
+        coVerify(exactly = 1) { api.addExtensionStore("https://a/repo/repo.json") }
+        coVerify(exactly = 1) { createExtensionRepo.await("https://b/repo/repo.json") }
+        coVerify(exactly = 0) { api.removeExtensionStore(any()) }
+        coVerify(exactly = 0) { deleteExtensionRepo.await(any()) }
+        assertEquals(1, summary.reposPulled)
+        assertEquals(1, summary.reposPushed)
+        assertEquals("""["https://a/repo","https://b/repo"]""", preferences.extensionRepoSnapshot().get())
+    }
+
+    @Test
+    fun `a repository removed in the app leaves the server only with pushLocalDeletions`() = runBlocking {
+        repos(local = emptyList(), remote = listOf("https://a/repo/index.min.json"), snapshot = """["https://a/repo"]""")
+
+        sync().await()
+        coVerify(exactly = 0) { api.removeExtensionStore(any()) }
+        coVerify(exactly = 0) { createExtensionRepo.await(any()) }
+
+        preferences.pushLocalDeletions().set(true)
+        val summary = sync().await()
+        coVerify(exactly = 1) { api.removeExtensionStore("https://a/repo/index.min.json") }
+        assertEquals(1, summary.reposRemovedRemote)
+        assertEquals("[]", preferences.extensionRepoSnapshot().get())
+    }
+
+    @Test
+    fun `a repository removed on the server leaves the app only with applyRemoteDeletions`() = runBlocking {
+        repos(local = listOf("https://a/repo"), remote = emptyList(), snapshot = """["https://a/repo"]""")
+
+        sync().await()
+        coVerify(exactly = 0) { deleteExtensionRepo.await(any()) }
+        coVerify(exactly = 0) { api.addExtensionStore(any()) }
+
+        preferences.applyRemoteDeletions().set(true)
+        val summary = sync().await()
+        coVerify(exactly = 1) { deleteExtensionRepo.await("https://a/repo") }
+        assertEquals(1, summary.reposRemovedLocal)
+        assertEquals("[]", preferences.extensionRepoSnapshot().get())
+    }
+
+    @Test
+    fun `index and repo json spellings are the same repository`() = runBlocking {
+        repos(local = listOf("https://a/repo/index.min.json"), remote = listOf("https://a/repo/repo.json"))
+
+        val summary = sync().await()
+
+        coVerify(exactly = 0) { api.addExtensionStore(any()) }
+        coVerify(exactly = 0) { createExtensionRepo.await(any()) }
+        assertEquals(0, summary.reposPulled + summary.reposPushed)
+    }
+
+    @Test
+    fun `a graphql failure is an error of its part and the others still ran`() = runBlocking {
+        preferences.applyRemoteDeletions().set(true)
+        preferences.lastDeletionId().set(7)
+        coEvery { api.deletions(7) } returns listOf(DeletionEntry(9, "3", "/m", "/c1"))
+        coEvery { api.extensionStores() } throws ServerApiException(200, "GraphQL: boom")
+
+        val summary = sync().await()
+
+        assertEquals(1, summary.errors.size)
+        assertTrue(summary.errors.single().startsWith("extension repos"))
+        assertEquals(9L, preferences.lastDeletionId().get())
+    }
+
+    // endregion
 }

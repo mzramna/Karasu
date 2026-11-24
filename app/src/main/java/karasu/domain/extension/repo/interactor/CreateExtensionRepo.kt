@@ -8,9 +8,13 @@ import karasu.domain.extension.repo.ExtensionRepoRepository
 import karasu.domain.extension.repo.exception.SaveExtensionRepoException
 import karasu.domain.extension.repo.model.ExtensionRepo
 import karasu.domain.extension.repo.service.ExtensionRepoService
+import karasu.domain.operations.OpAction
+import karasu.domain.operations.OpEntity
+import karasu.domain.operations.OperationLog
 
 class CreateExtensionRepo(
-    private val extensionRepoRepository: ExtensionRepoRepository
+    private val extensionRepoRepository: ExtensionRepoRepository,
+    private val operations: OperationLog? = null,
 ) {
     private val networkService: NetworkHelper by injectLazy()
 
@@ -70,6 +74,7 @@ class CreateExtensionRepo(
                 repo.website,
                 repo.signingKeyFingerprint,
             )
+            operations?.record(OpEntity.EXTENSION_REPO, OpAction.SET, name = repo.baseUrl)
             Result.Success
         } catch (e: SaveExtensionRepoException) {
             Logger.e(e) { "SQL Conflict attempting to add new repository ${repo.baseUrl}" }

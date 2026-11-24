@@ -108,6 +108,7 @@ fun domainModule() = module {
     factory {
         SyncSuwayomiServer(
             get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
+            get(), get(), get(),
         )
     }
 
@@ -120,8 +121,8 @@ fun domainModule() = module {
     factory { TransferCategoryRules(get(), get()) }
 
     single<ExtensionRepoRepository> { ExtensionRepoRepositoryImpl(get()) }
-    factory { CreateExtensionRepo(get()) }
-    factory { DeleteExtensionRepo(get()) }
+    factory { CreateExtensionRepo(get(), get()) }
+    factory { DeleteExtensionRepo(get(), get()) }
     factory { GetExtensionRepo(get()) }
     factory { ReplaceExtensionRepo(get()) }
     factory { UpdateExtensionRepo(get(), get()) }

@@ -561,6 +561,7 @@ class MockSuwayomiServer(
         val data = when {
             "KarasuLibrary" in query -> library(variables)
             "KarasuCategories" in query -> buildJsonObject { putJsonObject("categories") { put("nodes", categoryNodes()) } }
+            "KarasuExtensionStores" in query -> buildJsonObject { putJsonObject("extensionStores") { put("nodes", JsonArray(emptyList())) } }
             "KarasuCreateCategory" in query -> createCategory(variables["name"]!!.jsonPrimitive.content, device)
             "KarasuRenameCategory" in query -> renameCategory(variables["id"]!!.jsonPrimitive.int, variables["name"]!!.jsonPrimitive.content, device)
             "KarasuUpdateMangaCategories" in query -> updateMangaCategories(variables, device)

@@ -235,4 +235,20 @@ class ServerSyncApiTest {
             assertTrue(error.message!!.contains("Karasu-compatible"))
         }
     }
+
+    @Test
+    fun `extension stores are listed, added and removed through graphql`() = runBlocking {
+        FakeServer { reply("""{"data":{"extensionStores":{"nodes":[{"indexUrl":"https://a/repo.json"}]}}}""") }.use { server ->
+            val api = api(server)
+            assertEquals(listOf("https://a/repo.json"), api.extensionStores())
+            api.addExtensionStore("https://b/repo.json")
+            api.removeExtensionStore("https://b/repo.json")
+
+            assertTrue(server.requests[0].body.contains("extensionStores"))
+            assertTrue(server.requests[1].body.contains("addExtensionStore"))
+            assertTrue(server.requests[1].body.contains(""""indexUrl":"https://b/repo.json""""))
+            assertTrue(server.requests[2].body.contains("removeExtensionStore"))
+            assertTrue(server.requests[2].body.contains(""""indexUrl":"https://b/repo.json""""))
+        }
+    }
 }

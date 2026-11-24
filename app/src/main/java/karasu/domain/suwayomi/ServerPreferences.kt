@@ -88,6 +88,9 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
      */
     fun mergedSnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_merged_snapshot"), "")
 
+    /** The extension repository base urls both sides had after the last sync, as a JSON list; blank until the first. */
+    fun extensionRepoSnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_extension_repo_snapshot"), "")
+
     /** Same idea for category links, as `sourceId|url -> category names`. */
     fun categoryLinksSnapshot() =
         preferenceStore.getString(Preference.appStateKey("suwayomi_category_links_snapshot"), "")

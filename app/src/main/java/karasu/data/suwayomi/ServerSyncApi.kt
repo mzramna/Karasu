@@ -327,6 +327,18 @@ class ServerSyncApi(
     suspend fun categories(): List<RemoteCategory> =
         json.decodeFromJsonElement<CategoriesData>(graphql(ServerGraphQl.CATEGORIES)).categories.nodes
 
+    /** The index urls of the extension repositories the server has, as it stores them. */
+    suspend fun extensionStores(): List<String> =
+        json.decodeFromJsonElement<ExtensionStoresData>(graphql(ServerGraphQl.EXTENSION_STORES)).extensionStores.nodes.map { it.indexUrl }
+
+    suspend fun addExtensionStore(indexUrl: String) {
+        graphql(ServerGraphQl.ADD_EXTENSION_STORE, buildJsonObject { put("indexUrl", indexUrl) })
+    }
+
+    suspend fun removeExtensionStore(indexUrl: String) {
+        graphql(ServerGraphQl.REMOVE_EXTENSION_STORE, buildJsonObject { put("indexUrl", indexUrl) })
+    }
+
     suspend fun createCategory(name: String): RemoteCategory {
         val data = graphql(ServerGraphQl.CREATE_CATEGORY, buildJsonObject { put("name", name) })
         return json.decodeFromJsonElement<CreateCategoryData>(data).createCategory.category

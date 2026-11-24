@@ -172,6 +172,18 @@ reais** (os dois lados mudaram a mesma coisa): **vale a operação mais recente*
 sincronização grava não é registrado como ação do usuário. Sem registro de um lado, ou com um servidor sem log, valem
 as regras anteriores.
 
+## Repositórios de extensões
+
+O app e o servidor mantêm a **união** dos repositórios de extensões (GraphQL `extensionStores`, `addExtensionStore`,
+`removeExtensionStore`). As URLs são comparadas normalizadas (sem `index.min.json`, `index.json`, `index.pb`, `repo.json`
+nem barra final), então `.../index.min.json` no app e `.../repo.json` no servidor são o mesmo repositório. Um repositório
+novo de um lado é criado no outro; se o app não consegue ler o repositório do servidor (ex.: só v2), registra um aviso e
+tenta de novo na próxima vez. A **remoção** só propaga quando o último estado combinado (`suwayomi_extension_repo_snapshot`)
+prova que estava nos dois lados (a primeira execução nunca remove) e segue as opções já existentes: removido no app só
+sai do servidor com "enviar exclusões locais" (`pushLocalDeletions`); removido no servidor só sai do app com "aplicar
+exclusões remotas" (`applyRemoteDeletions`). Se o outro lado fez algo mais novo (log de operações, entidade
+`EXTENSION_REPO`, chave `repo:<indexUrl>`), o horário decide e o repositório é recriado. O backup não muda.
+
 ## Renomear categoria
 
 O app lembra qual categoria local é qual categoria do servidor e o nome combinado. Renomeou num lado: o outro

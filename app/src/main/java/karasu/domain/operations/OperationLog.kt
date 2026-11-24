@@ -17,6 +17,9 @@ object OpEntity {
     const val HISTORY = "HISTORY"
     const val MERGED = "MERGED"
     const val DELETION = "DELETION"
+
+    /** An extension repository; [LocalOp.name] holds its base url. */
+    const val EXTENSION_REPO = "EXTENSION_REPO"
 }
 
 object OpAction {
@@ -46,7 +49,8 @@ data class LocalOp(
     val published: Boolean = false,
 ) {
     /** What the operation is about, so a newer one on the same thing replaces an unpublished older one. */
-    val target: String get() = "$entity|${chapterId ?: ""}|${mangaId ?: ""}|${categoryId ?: ""}"
+    val target: String
+        get() = if (entity == OpEntity.EXTENSION_REPO) "$entity|$name" else "$entity|${chapterId ?: ""}|${mangaId ?: ""}|${categoryId ?: ""}"
 }
 
 /**
@@ -102,12 +106,19 @@ class OperationLog(
     }
 
     /** When this device last did something to the thing, or null if nothing is on record. */
-    fun latest(entity: String, chapterId: Long? = null, mangaId: Long? = null, categoryId: Long? = null): Long? =
+    fun latest(
+        entity: String,
+        chapterId: Long? = null,
+        mangaId: Long? = null,
+        categoryId: Long? = null,
+        name: String? = null,
+    ): Long? =
         all().filter {
             it.entity == entity &&
                 (chapterId == null || it.chapterId == chapterId) &&
                 (mangaId == null || it.mangaId == mangaId) &&
-                (categoryId == null || it.categoryId == categoryId)
+                (categoryId == null || it.categoryId == categoryId) &&
+                (name == null || it.name == name)
         }.maxOfOrNull { it.ts }
 
     /** Old entries only help to settle a conflict, and a conflict cannot reach back past the last sync. */

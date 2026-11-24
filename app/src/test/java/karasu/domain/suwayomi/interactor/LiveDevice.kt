@@ -365,7 +365,7 @@ class LiveDevice(
         SyncSuwayomiServer(
             api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
             setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
-            updateCategories, operations,
+            updateCategories, operations, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
         ).await()
     }
 }
