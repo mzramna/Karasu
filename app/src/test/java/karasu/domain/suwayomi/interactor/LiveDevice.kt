@@ -437,7 +437,7 @@ class LiveDevice(
             api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
             setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
             updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
-            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
         ).await()
     }
 }

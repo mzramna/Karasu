@@ -3,6 +3,7 @@ package karasu.domain.suwayomi.interactor
 import co.touchlab.kermit.Logger
 import eu.kanade.tachiyomi.data.database.models.Category
 import eu.kanade.tachiyomi.data.download.DownloadManager
+import eu.kanade.tachiyomi.data.cache.CoverCache
 import eu.kanade.tachiyomi.data.database.models.Chapter
 import eu.kanade.tachiyomi.data.database.models.MangaImpl
 import eu.kanade.tachiyomi.domain.manga.models.Manga
@@ -100,6 +101,7 @@ class SyncSuwayomiServer(
     private val insertManga: InsertManga,
     private val insertChapter: InsertChapter,
     private val updateManga: UpdateManga,
+    private val coverCache: CoverCache,
 ) {
 
     data class Summary(
@@ -742,6 +744,7 @@ class SyncSuwayomiServer(
             for (remote in page) {
                 val key = SyncMath.mangaKey(remote.sourceId, remote.url)
                 val manga = local[key] ?: importManga(remote)?.also { local[key] = it } ?: continue
+                cacheCover(manga, remote)
                 if (categories != null) {
                     val (l, r, names) = reconcileLinks(manga, remote, categories, linkSnapshot[key].orEmpty())
                     linksLocal += l
@@ -827,6 +830,22 @@ class SyncSuwayomiServer(
         }
         if (missing.isNotEmpty()) insertChapter.awaitBulk(missing)
         return manga
+    }
+
+    /**
+     * Keeps the server's cover on the device, so the app shows it without the server. Only covers the
+     * server supplied are fetched; a manga whose cover came from a source is left as it is.
+     */
+    private suspend fun cacheCover(manga: Manga, remote: RemoteManga) {
+        val path = remote.thumbnailUrl ?: return
+        if (manga.thumbnail_url != path) return
+        val target = coverCache.getCoverFile(path) ?: return
+        if (target.exists()) return
+        try {
+            api.downloadCover(path, target)
+        } catch (e: Exception) {
+            Logger.w(e) { "Suwayomi sync: cover of ${remote.url} not fetched" }
+        }
     }
 
     /** The server's status names, as the app's SManga constants. */

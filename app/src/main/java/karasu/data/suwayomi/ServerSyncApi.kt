@@ -459,6 +459,24 @@ class ServerSyncApi(
 
     // endregion
 
+    /** Downloads the cover the server serves at [path] (its thumbnailUrl) to [target]. */
+    suspend fun downloadCover(path: String, target: File) {
+        val answer = transport.execute { base ->
+            Request.Builder().url(base.resolve(path)!!).get().build()
+        }
+        answer.response.use { response ->
+            response.requireSuccess()
+            withContext(Dispatchers.IO) {
+                try {
+                    target.outputStream().use { out -> response.body.byteStream().copyTo(out) }
+                } catch (e: IOException) {
+                    target.delete()
+                    throw e
+                }
+            }
+        }
+    }
+
     // region plumbing
 
     private fun get(base: HttpUrl, path: String, vararg query: Pair<String, String>): Request =

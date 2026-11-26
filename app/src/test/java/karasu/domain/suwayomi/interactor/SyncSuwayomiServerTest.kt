@@ -35,6 +35,7 @@ import karasu.domain.manga.interactor.GetManga
 import karasu.domain.manga.interactor.InsertManga
 import karasu.domain.manga.interactor.UpdateManga
 import karasu.domain.chapter.interactor.InsertChapter
+import eu.kanade.tachiyomi.data.cache.CoverCache
 import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSources
 import karasu.domain.suwayomi.ServerPreferences
@@ -71,6 +72,7 @@ class SyncSuwayomiServerTest {
     private val insertManga = mockk<InsertManga>(relaxed = true)
     private val insertChapter = mockk<InsertChapter>(relaxed = true)
     private val updateManga = mockk<UpdateManga>(relaxed = true)
+    private val coverCache = mockk<CoverCache>(relaxed = true)
 
     private val manga = Manga.create("/m", "Title", 3L).apply { id = 1L }
 
@@ -78,7 +80,7 @@ class SyncSuwayomiServerTest {
         api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
         setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
         updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
-        insertManga, insertChapter, updateManga,
+        insertManga, insertChapter, updateManga, coverCache,
     )
 
     private fun chapter(id: Long, url: String, read: Boolean = false, page: Int = 0): Chapter =
@@ -171,6 +173,22 @@ class SyncSuwayomiServerTest {
 
         coVerify { insertManga.await(withArg { it.url == "/new" && it.favorite }) }
         coVerify { insertChapter.awaitBulk(withArg { it.size == 1 && it[0].url == "/c1" && it[0].manga_id == 55L }) }
+    }
+
+    @Test
+    fun `the server's cover of an imported manga is kept on the device`() = runBlocking {
+        val target = java.io.File.createTempFile("cover", ".jpg").apply { delete() }
+        val path = "/api/v1/manga/100/thumbnail"
+        preferences.syncProgress().set(true)
+        coEvery { getManga.awaitByUrlAndSource("/new", 7L) } returns null
+        coEvery { insertManga.await(any()) } returns 55L
+        coEvery { getChapter.awaitAllRaw(55L, false) } returns emptyList()
+        coEvery { coverCache.getCoverFile(path) } returns target
+        serverLibrary(RemoteManga(100, "7", "/new", emptySet(), emptyList(), thumbnailUrl = path))
+
+        sync().await()
+
+        coVerify { api.downloadCover(path, target) }
     }
 
     @Test
