@@ -108,7 +108,7 @@ fun domainModule() = module {
     factory {
         SyncSuwayomiServer(
             get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
-            get(), get(), get(),
+            get(), get(), get(), get(), get(), get(),
         )
     }
 

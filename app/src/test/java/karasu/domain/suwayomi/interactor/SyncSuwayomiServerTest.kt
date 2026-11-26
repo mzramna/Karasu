@@ -32,6 +32,9 @@ import karasu.domain.history.interactor.UpsertHistory
 import karasu.domain.category.interactor.UpdateCategories
 import karasu.domain.operations.OperationLog
 import karasu.domain.manga.interactor.GetManga
+import karasu.domain.manga.interactor.InsertManga
+import karasu.domain.manga.interactor.UpdateManga
+import karasu.domain.chapter.interactor.InsertChapter
 import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSources
 import karasu.domain.suwayomi.ServerPreferences
@@ -65,6 +68,9 @@ class SyncSuwayomiServerTest {
     private val getExtensionRepo = mockk<GetExtensionRepo>(relaxed = true)
     private val createExtensionRepo = mockk<CreateExtensionRepo>(relaxed = true)
     private val deleteExtensionRepo = mockk<DeleteExtensionRepo>(relaxed = true)
+    private val insertManga = mockk<InsertManga>(relaxed = true)
+    private val insertChapter = mockk<InsertChapter>(relaxed = true)
+    private val updateManga = mockk<UpdateManga>(relaxed = true)
 
     private val manga = Manga.create("/m", "Title", 3L).apply { id = 1L }
 
@@ -72,6 +78,7 @@ class SyncSuwayomiServerTest {
         api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
         setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
         updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
+        insertManga, insertChapter, updateManga,
     )
 
     private fun chapter(id: Long, url: String, read: Boolean = false, page: Int = 0): Chapter =
@@ -148,11 +155,30 @@ class SyncSuwayomiServerTest {
     }
 
     @Test
-    fun `a manga the server does not have is left alone`() = runBlocking {
+    fun `a server library manga the device lacks is imported with its chapters`() = runBlocking {
+        preferences.syncProgress().set(true)
+        coEvery { getManga.awaitByUrlAndSource("/new", 7L) } returns null
+        coEvery { insertManga.await(any()) } returns 55L
+        coEvery { getChapter.awaitAllRaw(55L, false) } returns emptyList()
+        serverLibrary(
+            RemoteManga(
+                id = 100, sourceId = "7", url = "/new", categoryIds = emptySet(), title = "New",
+                chapters = listOf(RemoteChapter(1, "/c1", name = "Ch 1", chapterNumber = 1f)),
+            ),
+        )
+
+        sync().await()
+
+        coVerify { insertManga.await(withArg { it.url == "/new" && it.favorite }) }
+        coVerify { insertChapter.awaitBulk(withArg { it.size == 1 && it[0].url == "/c1" && it[0].manga_id == 55L }) }
+    }
+
+    @Test
+    fun `a local manga the server does not have is left alone`() = runBlocking {
         preferences.syncProgress().set(true)
         serverLibrary(RemoteManga(100, "3", "/other", emptySet(), listOf(RemoteChapter(1, "/c", true, 3))))
         sync().await()
-        coVerify(exactly = 0) { getChapter.awaitAllRaw(any(), any()) }
+        coVerify(exactly = 0) { getChapter.awaitAllRaw(1L, any()) }
         coVerify(exactly = 0) { api.updateChapters(any()) }
     }
 

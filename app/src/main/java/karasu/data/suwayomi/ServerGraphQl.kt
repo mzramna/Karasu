@@ -85,8 +85,15 @@ internal object ServerGraphQl {
               id
               sourceId
               url
+              title
+              thumbnailUrl
+              author
+              artist
+              description
+              genre
+              status
               categories { nodes { id } }
-              chapters { nodes { id url isRead lastPageRead lastReadAt } }
+              chapters { nodes { id url name chapterNumber scanlator uploadDate sourceOrder isRead lastPageRead lastReadAt } }
             }
             pageInfo { hasNextPage }
           }
@@ -125,6 +132,11 @@ data class RemoteChapter(
     val lastPageRead: Int = 0,
     /** When the chapter was last read, in epoch seconds; 0 when it is not in the history. */
     val lastReadAt: Long = 0,
+    val name: String = "",
+    val chapterNumber: Float = -1f,
+    val scanlator: String? = null,
+    val uploadDate: Long = 0,
+    val sourceOrder: Int = 0,
 )
 
 /** A manga of the server's library, identified for matching by [sourceId] + [url], never by [id]. */
@@ -134,6 +146,14 @@ data class RemoteManga(
     val url: String,
     val categoryIds: Set<Int>,
     val chapters: List<RemoteChapter>,
+    val title: String = "",
+    val thumbnailUrl: String? = null,
+    val author: String? = null,
+    val artist: String? = null,
+    val description: String? = null,
+    val genres: List<String> = emptyList(),
+    /** The server's enum name, e.g. ONGOING; see the import in SyncSuwayomiServer. */
+    val status: String = "UNKNOWN",
 )
 
 @Serializable
@@ -171,6 +191,13 @@ internal data class MangaNode(
     val id: Int,
     @Serializable(with = LenientIdSerializer::class) val sourceId: String,
     val url: String,
+    val title: String = "",
+    val thumbnailUrl: String? = null,
+    val author: String? = null,
+    val artist: String? = null,
+    val description: String? = null,
+    val genre: List<String> = emptyList(),
+    val status: String = "UNKNOWN",
     val categories: Nodes<CategoryId> = Nodes(),
     val chapters: Nodes<RemoteChapter> = Nodes(),
 ) {
@@ -183,5 +210,12 @@ internal data class MangaNode(
         url = url,
         categoryIds = categories.nodes.mapTo(mutableSetOf()) { it.id },
         chapters = chapters.nodes,
+        title = title,
+        thumbnailUrl = thumbnailUrl,
+        author = author,
+        artist = artist,
+        description = description,
+        genres = genre,
+        status = status,
     )
 }

@@ -3,7 +3,10 @@ package karasu.domain.suwayomi.interactor
 import co.touchlab.kermit.Logger
 import eu.kanade.tachiyomi.data.database.models.Category
 import eu.kanade.tachiyomi.data.download.DownloadManager
+import eu.kanade.tachiyomi.data.database.models.Chapter
+import eu.kanade.tachiyomi.data.database.models.MangaImpl
 import eu.kanade.tachiyomi.domain.manga.models.Manga
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.SourceManager
 import eu.kanade.tachiyomi.ui.library.LibrarySort
 import karasu.data.suwayomi.RemoteChapter
@@ -16,6 +19,7 @@ import karasu.domain.category.interactor.SetMangaCategories
 import karasu.domain.category.interactor.UpdateCategories
 import karasu.domain.category.models.CategoryUpdate
 import karasu.domain.chapter.interactor.GetChapter
+import karasu.domain.chapter.interactor.InsertChapter
 import karasu.domain.chapter.interactor.UpdateChapter
 import karasu.domain.chapter.models.ChapterUpdate
 import karasu.domain.extension.repo.interactor.CreateExtensionRepo
@@ -28,6 +32,9 @@ import karasu.domain.operations.OpEntity
 import karasu.domain.operations.OperationLog
 import karasu.domain.operations.SyncOrigin
 import karasu.domain.manga.interactor.GetManga
+import karasu.domain.manga.interactor.InsertManga
+import karasu.domain.manga.interactor.UpdateManga
+import karasu.domain.manga.models.MangaUpdate
 import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSources
 import karasu.domain.suwayomi.ServerPreferences
@@ -90,6 +97,9 @@ class SyncSuwayomiServer(
     private val getExtensionRepo: GetExtensionRepo,
     private val createExtensionRepo: CreateExtensionRepo,
     private val deleteExtensionRepo: DeleteExtensionRepo,
+    private val insertManga: InsertManga,
+    private val insertChapter: InsertChapter,
+    private val updateManga: UpdateManga,
 ) {
 
     data class Summary(
@@ -711,7 +721,7 @@ class SyncSuwayomiServer(
         var history = preferences.syncHistory().get()
 
         val local = getManga.awaitFavorites().filter { it.id != null }
-            .associateBy { SyncMath.mangaKey(it.source, it.url) }
+            .associateByTo(mutableMapOf()) { SyncMath.mangaKey(it.source, it.url) }
         val linkSnapshot = loadLinkSnapshot()
         val newLinkSnapshot = mutableMapOf<String, Set<String>>()
         val progressSnapshot = loadProgressSnapshot()
@@ -731,7 +741,7 @@ class SyncSuwayomiServer(
             val historyPuts = mutableListOf<HistoryEntry>()
             for (remote in page) {
                 val key = SyncMath.mangaKey(remote.sourceId, remote.url)
-                val manga = local[key] ?: continue
+                val manga = local[key] ?: importManga(remote)?.also { local[key] = it } ?: continue
                 if (categories != null) {
                     val (l, r, names) = reconcileLinks(manga, remote, categories, linkSnapshot[key].orEmpty())
                     linksLocal += l
@@ -780,6 +790,54 @@ class SyncSuwayomiServer(
             chaptersPushed = pushed,
         )
     }
+
+    /**
+     * Creates the server's library manga this device does not have yet, with its chapters, as a favourite.
+     * Returns null when the server's source id is not a number.
+     */
+    private suspend fun importManga(remote: RemoteManga): Manga? {
+        val source = remote.sourceId.toLongOrNull() ?: return null
+        val manga = getManga.awaitByUrlAndSource(remote.url, source)?.also {
+            if (!it.favorite) updateManga.await(MangaUpdate(id = it.id!!, favorite = true))
+        } ?: MangaImpl(source = source, url = remote.url).apply {
+            title = remote.title
+            thumbnail_url = remote.thumbnailUrl
+            artist = remote.artist
+            author = remote.author
+            description = remote.description
+            genre = remote.genres.joinToString()
+            status = serverStatus[remote.status] ?: SManga.UNKNOWN
+            favorite = true
+            initialized = true
+            date_added = System.currentTimeMillis()
+            id = insertManga.await(this)
+        }
+        val mangaId = manga.id ?: return null
+        val have = getChapter.awaitAllRaw(mangaId, false).mapTo(mutableSetOf()) { it.url }
+        val missing = remote.chapters.filter { it.url !in have }.map { c ->
+            Chapter.create().apply {
+                url = c.url
+                name = c.name
+                chapter_number = c.chapterNumber
+                scanlator = c.scanlator
+                date_upload = c.uploadDate
+                source_order = c.sourceOrder
+                manga_id = mangaId
+            }
+        }
+        if (missing.isNotEmpty()) insertChapter.awaitBulk(missing)
+        return manga
+    }
+
+    /** The server's status names, as the app's SManga constants. */
+    private val serverStatus = mapOf(
+        "ONGOING" to SManga.ONGOING,
+        "COMPLETED" to SManga.COMPLETED,
+        "LICENSED" to SManga.LICENSED,
+        "PUBLISHING_FINISHED" to SManga.PUBLISHING_FINISHED,
+        "CANCELLED" to SManga.CANCELLED,
+        "ON_HIATUS" to SManga.ON_HIATUS,
+    )
 
     /** How a local category corresponds to a server one, and the name both agreed on last time. */
     @Serializable
