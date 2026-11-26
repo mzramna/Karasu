@@ -2,15 +2,21 @@ package eu.kanade.tachiyomi.appwidget
 
 import android.content.Context
 import androidx.glance.appwidget.GlanceAppWidgetManager
+import co.touchlab.kermit.Logger
 
 class TachiyomiWidgetManager {
 
+    // shortcut: widget refresh errors are only logged, so the widget can stay stale, upgrade if the system stops refusing the call (AppWidgetService SecurityException)
     suspend fun Context.init() {
-        val manager = GlanceAppWidgetManager(this)
-        if (manager.getGlanceIds(UpdatesGridGlanceWidget::class.java).isNotEmpty()) {
-            UpdatesGridGlanceWidget().loadData()
+        try {
+            val manager = GlanceAppWidgetManager(this)
+            if (manager.getGlanceIds(UpdatesGridGlanceWidget::class.java).isNotEmpty()) {
+                UpdatesGridGlanceWidget().loadData()
+            }
+            refreshReleases()
+        } catch (e: SecurityException) {
+            Logger.w(e) { "Widget refresh refused by the system" }
         }
-        refreshReleases()
     }
 
     /**
@@ -21,9 +27,13 @@ class TachiyomiWidgetManager {
      * one that is a few seconds late.
      */
     suspend fun Context.refreshReleases() {
-        val manager = GlanceAppWidgetManager(this)
-        if (manager.getGlanceIds(ReleasesGlanceWidget::class.java).isNotEmpty()) {
-            ReleasesGlanceWidget().loadData()
+        try {
+            val manager = GlanceAppWidgetManager(this)
+            if (manager.getGlanceIds(ReleasesGlanceWidget::class.java).isNotEmpty()) {
+                ReleasesGlanceWidget().loadData()
+            }
+        } catch (e: SecurityException) {
+            Logger.w(e) { "Releases widget refresh refused by the system" }
         }
     }
 }
