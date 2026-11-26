@@ -201,6 +201,8 @@
     <string name="suwayomi_sync_interval">Sincronizar automaticamente</string>
     <string name="suwayomi_only_over_wifi">Sincronizar só no Wi-Fi</string>
     <string name="suwayomi_sync_now">Sincronizar agora</string>
+    <string name="overflow_sync_servers">Sincronizar com servidores</string>
+    <string name="overflow_sync_servers_explanation">Sincroniza com o servidor Suwayomi e com o shelf do Yatagarasu (KOReader), quando configurados.</string>
     <string name="suwayomi_sync_started">Sincronizando com o servidor</string>
     <string name="suwayomi_never_synced">Nunca sincronizado</string>
     <string name="suwayomi_last_sync">%1$s · %2$s</string>

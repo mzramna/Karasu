@@ -16,7 +16,14 @@ import karasu.i18n.MR
 import karasu.util.lang.getString
 import dev.icerock.moko.resources.compose.stringResource
 import eu.kanade.tachiyomi.core.preference.toggle
+import eu.kanade.tachiyomi.data.koreader.KoreaderSyncJob
+import karasu.data.koreader.KoreaderApi
+import karasu.domain.suwayomi.ServerPreferences
 import eu.kanade.tachiyomi.data.preference.PreferencesHelper
+import eu.kanade.tachiyomi.data.suwayomi.ServerSyncJob
+import androidx.core.view.isVisible
+import android.widget.Toast
+import eu.kanade.tachiyomi.util.system.toast
 import eu.kanade.tachiyomi.databinding.TachiOverflowLayoutBinding
 import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.util.lang.addBetaTag
@@ -87,6 +94,20 @@ class OverflowDialog(activity: MainActivity) : Dialog(activity, R.style.Overflow
                 setIcon(drawable)
                 (getIcon() as? AnimatedVectorDrawableCompat)?.start()
             }
+        }
+        // Shown only when at least one server is configured; long-press explains what it does.
+        val koreader: KoreaderApi by injectLazy()
+        val serverPrefs: ServerPreferences by injectLazy()
+        binding.syncItem.isVisible = ServerSyncJob.isUsable(serverPrefs) || koreader.isConfigured
+        binding.syncItem.text = context.getString(MR.strings.overflow_sync_servers)
+        binding.syncItem.setOnLongClickListener {
+            context.toast(MR.strings.overflow_sync_servers_explanation, Toast.LENGTH_LONG)
+            true
+        }
+        binding.syncItem.setOnClickListener {
+            ServerSyncJob.startNow(context)
+            KoreaderSyncJob.startNow(context)
+            dismiss()
         }
         binding.settingsItem.setOnClickListener {
             activity.showSettings()

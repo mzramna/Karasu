@@ -136,7 +136,7 @@ class ServerSyncJob(context: Context, workerParams: WorkerParameters) :
             context.workManager.enqueueUniqueWork(TAG_MANUAL, ExistingWorkPolicy.KEEP, request)
         }
 
-        private fun isUsable(preferences: ServerPreferences) =
+        fun isUsable(preferences: ServerPreferences) =
             preferences.enabled().get() && preferences.primaryUrl().get().isNotBlank()
 
         private fun constraints(preferences: ServerPreferences) = Constraints(
