@@ -1,5 +1,6 @@
 package karasu.core.di
 
+import eu.kanade.tachiyomi.extension.ExtensionManager
 import eu.kanade.tachiyomi.source.MergedSourceFallback
 import eu.kanade.tachiyomi.util.chapter.MergedSourceSync
 import android.app.Application
@@ -108,7 +109,7 @@ fun domainModule() = module {
     factory {
         SyncSuwayomiServer(
             get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
-            get(), get(), get(), get(), get(), get(), get(),
+            get(), get(), get(), get(), get(), get(), get(), get<ExtensionManager>(), get<Application>(),
         )
     }
 

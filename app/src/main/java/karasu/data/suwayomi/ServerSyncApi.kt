@@ -394,6 +394,13 @@ class ServerSyncApi(
         graphql(ServerGraphQl.REMOVE_EXTENSION_STORE, buildJsonObject { put("indexUrl", indexUrl) })
     }
 
+    internal suspend fun extensions(): List<RemoteExtension> =
+        json.decodeFromJsonElement<ExtensionsData>(graphql(ServerGraphQl.EXTENSIONS)).extensions.nodes
+
+    suspend fun installExtension(pkgName: String) {
+        graphql(ServerGraphQl.INSTALL_EXTENSION, buildJsonObject { put("id", pkgName) })
+    }
+
     suspend fun createCategory(name: String): RemoteCategory {
         val data = graphql(ServerGraphQl.CREATE_CATEGORY, buildJsonObject { put("name", name) })
         return json.decodeFromJsonElement<CreateCategoryData>(data).createCategory.category
@@ -414,6 +421,10 @@ class ServerSyncApi(
                 if (toRemove.isNotEmpty()) putJsonArray("remove") { toRemove.forEach { id -> add(JsonPrimitive(id)) } }
             },
         )
+    }
+
+    suspend fun removeFromLibrary(mangaId: Long) {
+        graphql(ServerGraphQl.REMOVE_FROM_LIBRARY, buildJsonObject { put("id", mangaId) })
     }
 
     /**
@@ -459,21 +470,14 @@ class ServerSyncApi(
 
     // endregion
 
-    /** Downloads the cover the server serves at [path] (its thumbnailUrl) to [target]. */
-    suspend fun downloadCover(path: String, target: File) {
+    /** Downloads the cover the server serves at [path] (its thumbnailUrl), with the server's credentials. */
+    suspend fun downloadCover(path: String): ByteArray {
         val answer = transport.execute { base ->
             Request.Builder().url(base.resolve(path)!!).get().build()
         }
-        answer.response.use { response ->
+        return answer.response.use { response ->
             response.requireSuccess()
-            withContext(Dispatchers.IO) {
-                try {
-                    target.outputStream().use { out -> response.body.byteStream().copyTo(out) }
-                } catch (e: IOException) {
-                    target.delete()
-                    throw e
-                }
-            }
+            withContext(Dispatchers.IO) { response.body.bytes() }
         }
     }
 

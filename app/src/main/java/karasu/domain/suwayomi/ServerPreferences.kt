@@ -107,6 +107,9 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
     /** `sourceId|url -> chapter urls` that were downloaded at the end of the last sync. */
     fun downloadedSnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_downloaded_snapshot"), "")
 
+    /** `(sourceId, url)` of every manga in this device's library at the end of the last sync. */
+    fun librarySnapshot() = preferenceStore.getString(Preference.appStateKey("suwayomi_library_snapshot"), "")
+
     /** Random and permanent per installation: how the server tells this device's operations from the others'. */
     fun deviceId(): Preference<String> = preferenceStore.getString(Preference.appStateKey("suwayomi_device_id"), "")
 
@@ -129,7 +132,7 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
 
     /** Forgets what was agreed on, so the next sync reconciles by state alone and removes nothing (see `resetRequired`). */
     fun clearAgreedState() {
-        listOf(mergedSnapshot(), extensionRepoSnapshot(), categoryLinksSnapshot(), progressSnapshot(), historySnapshot())
+        listOf(mergedSnapshot(), extensionRepoSnapshot(), categoryLinksSnapshot(), progressSnapshot(), historySnapshot(), librarySnapshot())
             .forEach { it.set("") }
     }
 

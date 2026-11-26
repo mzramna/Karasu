@@ -2,7 +2,10 @@ package karasu.domain.suwayomi.interactor
 
 import eu.kanade.tachiyomi.data.database.models.Category
 import eu.kanade.tachiyomi.data.database.models.Chapter
+import android.app.Application
 import eu.kanade.tachiyomi.data.database.models.create
+import eu.kanade.tachiyomi.extension.ExtensionManager
+import eu.kanade.tachiyomi.extension.model.Extension
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.domain.manga.models.Manga
 import eu.kanade.tachiyomi.source.SourceManager
@@ -13,6 +16,7 @@ import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
 import karasu.data.suwayomi.RemoteCategory
+import karasu.data.suwayomi.RemoteExtension
 import karasu.data.suwayomi.RemoteChapter
 import karasu.data.suwayomi.RemoteManga
 import karasu.data.suwayomi.ServerSyncApi
@@ -41,6 +45,8 @@ import karasu.domain.manga.merged.interactor.MergedSources
 import karasu.domain.suwayomi.ServerPreferences
 import karasu.domain.suwayomi.models.DeletionEntry
 import karasu.domain.suwayomi.models.DownloadPolicy
+import karasu.domain.suwayomi.models.MangaLookup
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -73,6 +79,8 @@ class SyncSuwayomiServerTest {
     private val insertChapter = mockk<InsertChapter>(relaxed = true)
     private val updateManga = mockk<UpdateManga>(relaxed = true)
     private val coverCache = mockk<CoverCache>(relaxed = true)
+    private val extensionManager = mockk<ExtensionManager>(relaxed = true)
+    private val app = mockk<Application>(relaxed = true)
 
     private val manga = Manga.create("/m", "Title", 3L).apply { id = 1L }
 
@@ -80,7 +88,7 @@ class SyncSuwayomiServerTest {
         api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
         setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
         updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
-        insertManga, insertChapter, updateManga, coverCache,
+        insertManga, insertChapter, updateManga, coverCache, extensionManager, app,
     )
 
     private fun chapter(id: Long, url: String, read: Boolean = false, page: Int = 0): Chapter =
@@ -105,6 +113,39 @@ class SyncSuwayomiServerTest {
         preferences.syncHistory().set(false)
         preferences.pushLocalDeletions().set(false)
         coEvery { getManga.awaitFavorites() } returns listOf(manga)
+        coEvery { api.extensions() } returns emptyList()
+        every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(emptyList())
+        every { extensionManager.availableExtensionsFlow } returns MutableStateFlow(emptyList())
+        every { extensionManager.untrustedExtensionsFlow } returns MutableStateFlow(emptyList())
+    }
+
+    @Test
+    fun `an extension installed in the app is installed on the server`() = runBlocking {
+        val mango = "eu.kanade.tachiyomi.extension.all.mango"
+        coEvery { api.extensions() } returns listOf(RemoteExtension(mango, isInstalled = false))
+        val installed = mockk<Extension.Installed>(relaxed = true)
+        every { installed.pkgName } returns mango
+        every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(listOf(installed))
+
+        sync().await()
+
+        coVerify { api.installExtension(mango) }
+    }
+
+    @Test
+    fun `an extension the server installed is trusted once the app has loaded it`() = runBlocking {
+        val mango = "eu.kanade.tachiyomi.extension.all.mango"
+        coEvery { api.extensions() } returns listOf(RemoteExtension(mango, isInstalled = true))
+        val untrusted = mockk<Extension.Untrusted>(relaxed = true)
+        every { untrusted.pkgName } returns mango
+        every { untrusted.versionCode } returns 7L
+        every { untrusted.signatureHash } returns "hash"
+        every { extensionManager.untrustedExtensionsFlow } returns MutableStateFlow(listOf(untrusted))
+
+        sync().await()
+
+        coVerify { extensionManager.trust(mango, 7L, "hash") }
+        coVerify(exactly = 0) { api.installExtension(any()) }
     }
 
     private fun serverLibrary(vararg remote: RemoteManga) {
@@ -177,18 +218,18 @@ class SyncSuwayomiServerTest {
 
     @Test
     fun `the server's cover of an imported manga is kept on the device`() = runBlocking {
-        val target = java.io.File.createTempFile("cover", ".jpg").apply { delete() }
         val path = "/api/v1/manga/100/thumbnail"
         preferences.syncProgress().set(true)
         coEvery { getManga.awaitByUrlAndSource("/new", 7L) } returns null
         coEvery { insertManga.await(any()) } returns 55L
         coEvery { getChapter.awaitAllRaw(55L, false) } returns emptyList()
-        coEvery { coverCache.getCoverFile(path) } returns target
+        coEvery { coverCache.getCustomCoverFile(any<Manga>()) } returns java.io.File("/nonexistent/cover")
+        coEvery { api.downloadCover(path) } returns byteArrayOf(1, 2, 3)
         serverLibrary(RemoteManga(100, "7", "/new", emptySet(), emptyList(), thumbnailUrl = path))
 
         sync().await()
 
-        coVerify { api.downloadCover(path, target) }
+        coVerify { coverCache.setCustomCoverToCache(any(), any()) }
     }
 
     @Test
@@ -292,6 +333,20 @@ class SyncSuwayomiServerTest {
         coVerify(exactly = 0) { setMangaCategories.await(any(), any()) }
         assertTrue(preferences.categoryLinksSnapshot().get().contains("drama"))
         assertFalse(preferences.categoryLinksSnapshot().get().contains("action"))
+    }
+
+    @Test
+    fun `a manga taken out of the app's library leaves the server's library too`() = runBlocking {
+        // Last sync the library held /m and /gone; now only /m is a favourite here.
+        preferences.syncProgress().set(true)
+        preferences.librarySnapshot().set("[\"3|/m\",\"3|/gone\"]")
+        coEvery { api.lookupManga(3L, "/gone") } returns MangaLookup(mangaId = 44L)
+        serverLibrary()
+
+        sync().await()
+
+        coVerify { api.removeFromLibrary(44L) }
+        coVerify(exactly = 0) { api.removeFromLibrary(match { it != 44L }) }
     }
 
     @Test

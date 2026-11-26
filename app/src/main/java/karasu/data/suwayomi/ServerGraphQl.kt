@@ -35,6 +35,20 @@ internal object ServerGraphQl {
         }
     """
 
+    const val EXTENSIONS = """
+        query KarasuExtensions {
+          extensions { nodes { pkgName isInstalled } }
+        }
+    """
+
+    const val INSTALL_EXTENSION = """
+        mutation KarasuInstallExtension(${'$'}id: String!) {
+          updateExtension(input: {id: ${'$'}id, patch: {install: true}}) {
+            extension { pkgName }
+          }
+        }
+    """
+
     const val EXTENSION_STORES = """
         query KarasuExtensionStores {
           extensionStores { nodes { indexUrl } }
@@ -62,6 +76,15 @@ internal object ServerGraphQl {
           updateMangaCategories(
             input: {id: ${'$'}id, patch: {addToCategories: ${'$'}add, removeFromCategories: ${'$'}remove}}
           ) {
+            clientMutationId
+          }
+        }
+    """
+
+    /** Takes a manga out of the server's library; the server keeps the manga and its chapters. */
+    const val REMOVE_FROM_LIBRARY = """
+        mutation KarasuRemoveFromLibrary(${'$'}id: Int!) {
+          updateManga(input: {id: ${'$'}id, patch: {inLibrary: false}}) {
             clientMutationId
           }
         }
@@ -164,6 +187,12 @@ internal data class ExtensionStoresData(val extensionStores: Nodes<RemoteExtensi
 
 @Serializable
 internal data class RemoteExtensionStore(val indexUrl: String)
+
+@Serializable
+internal data class ExtensionsData(val extensions: Nodes<RemoteExtension>)
+
+@Serializable
+internal data class RemoteExtension(val pkgName: String, val isInstalled: Boolean)
 
 @Serializable
 internal data class CategoriesData(val categories: Nodes<RemoteCategory>)

@@ -1,6 +1,9 @@
 package karasu.domain.suwayomi.interactor
 
+import android.app.Application
 import co.touchlab.kermit.Logger
+import eu.kanade.tachiyomi.extension.ExtensionInstallerJob
+import eu.kanade.tachiyomi.extension.ExtensionManager
 import eu.kanade.tachiyomi.data.database.models.Category
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.cache.CoverCache
@@ -102,6 +105,8 @@ class SyncSuwayomiServer(
     private val insertChapter: InsertChapter,
     private val updateManga: UpdateManga,
     private val coverCache: CoverCache,
+    private val extensionManager: ExtensionManager,
+    private val app: Application,
 ) {
 
     data class Summary(
@@ -160,6 +165,7 @@ class SyncSuwayomiServer(
             part("library") { syncLibrary() }
         }
         part("extension repos") { syncExtensionRepos() }
+        part("extensions") { syncExtensions() }
         part("operation log") { publishOperations() }
         // Everything this run read has been applied: only now may the server forget it.
         if (opsAvailable && summary.errors.isEmpty()) preferences.operationAckSeq().set(pulledSeq)
@@ -574,6 +580,36 @@ class SyncSuwayomiServer(
 
     // endregion
 
+    // region extensions
+
+    /**
+     * Installed extensions are the union of both sides; uninstalls are not carried over. The server installs what the app
+     * has, and the app installs what the server has. An extension the server installed is trusted here once the app loads it.
+     */
+    private suspend fun syncExtensions() {
+        val remote = api.extensions()
+        val remoteInstalled = remote.filter { it.isInstalled }.map { it.pkgName }.toSet()
+        val onServer = remote.map { it.pkgName }.toSet()
+        val localInstalled = extensionManager.installedExtensionsFlow.value.map { it.pkgName }.toSet()
+
+        for (pkgName in localInstalled - remoteInstalled) {
+            if (pkgName in onServer) api.installExtension(pkgName)
+        }
+
+        val missingHere = remoteInstalled - localInstalled
+        if (missingHere.isNotEmpty()) {
+            if (extensionManager.availableExtensionsFlow.value.isEmpty()) extensionManager.findAvailableExtensions()
+            val infos = extensionManager.availableExtensionsFlow.value
+                .filter { it.pkgName in missingHere && extensionManager.getInstallInfo(it.pkgName) == null }
+                .map { ExtensionManager.ExtensionInfo(it) }
+            if (infos.isNotEmpty()) ExtensionInstallerJob.startJob(app, infos)
+        }
+
+        extensionManager.untrustedExtensionsFlow.value
+            .filter { it.pkgName in remoteInstalled }
+            .forEach { extensionManager.trust(it.pkgName, it.versionCode, it.signatureHash) }
+    }
+
     // region extension repositories
 
     private fun normalizeRepoUrl(url: String) = url.trim().trimEnd('/')
@@ -724,6 +760,16 @@ class SyncSuwayomiServer(
 
         val local = getManga.awaitFavorites().filter { it.id != null }
             .associateByTo(mutableMapOf()) { SyncMath.mangaKey(it.source, it.url) }
+        // A pair that left this device's library since the last sync was taken out on purpose: take
+        // it out of the server's library too, before the walk below could bring it back.
+        val lastLibrary = loadLibrarySnapshot()
+        if (lastLibrary != null && local.isNotEmpty()) {
+            for (key in lastLibrary) {
+                if (key in local) continue
+                val sourceId = key.substringBefore('|').toLongOrNull() ?: continue
+                api.lookupManga(sourceId, key.substringAfter('|'))?.let { api.removeFromLibrary(it.mangaId) }
+            }
+        }
         val linkSnapshot = loadLinkSnapshot()
         val newLinkSnapshot = mutableMapOf<String, Set<String>>()
         val progressSnapshot = loadProgressSnapshot()
@@ -781,6 +827,7 @@ class SyncSuwayomiServer(
             }
         }
 
+        saveLibrarySnapshot(local.values)
         if (categories != null) saveLinkSnapshot(newLinkSnapshot)
         if (progress) saveProgressSnapshot(newProgressSnapshot)
         if (history) saveHistorySnapshot(newHistorySnapshot)
@@ -839,10 +886,10 @@ class SyncSuwayomiServer(
     private suspend fun cacheCover(manga: Manga, remote: RemoteManga) {
         val path = remote.thumbnailUrl ?: return
         if (manga.thumbnail_url != path) return
-        val target = coverCache.getCoverFile(path) ?: return
-        if (target.exists()) return
+        // Kept as the manga's custom cover: the library reads that file first, with no URL or credentials.
+        if (coverCache.getCustomCoverFile(manga).exists()) return
         try {
-            api.downloadCover(path, target)
+            coverCache.setCustomCoverToCache(manga, api.downloadCover(path).inputStream())
         } catch (e: Exception) {
             Logger.w(e) { "Suwayomi sync: cover of ${remote.url} not fetched" }
         }
@@ -1160,6 +1207,24 @@ class SyncSuwayomiServer(
             Logger.w(e) { "Ignoring unreadable Suwayomi sync snapshot" }
             emptyMap()
         }
+    }
+
+    private val librarySnapshotSerializer = ListSerializer(String.serializer())
+
+    /** The `sourceId|url` keys of the library at the last sync; null when there is none usable (then nothing is taken out). */
+    private fun loadLibrarySnapshot(): List<String>? {
+        val raw = preferences.librarySnapshot().get()
+        if (raw.isBlank()) return null
+        return try {
+            json.decodeFromString(librarySnapshotSerializer, raw)
+        } catch (e: Exception) {
+            Logger.w(e) { "Ignoring unreadable Suwayomi library snapshot" }
+            null
+        }
+    }
+
+    private fun saveLibrarySnapshot(library: Collection<Manga>) {
+        preferences.librarySnapshot().set(json.encodeToString(librarySnapshotSerializer, library.map { SyncMath.mangaKey(it.source, it.url) }))
     }
 
     private val linkSnapshotSerializer = MapSerializer(String.serializer(), ListSerializer(String.serializer()))
