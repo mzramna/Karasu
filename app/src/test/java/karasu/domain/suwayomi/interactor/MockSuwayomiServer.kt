@@ -681,6 +681,10 @@ class MockSuwayomiServer(
             "KarasuExtensionStores" in query -> buildJsonObject {
                 putJsonObject("extensionStores") { put("nodes", JsonArray(extensionStoreUrls.map { buildJsonObject { put("indexUrl", it) } })) }
             }
+            "KarasuExtensions" in query -> buildJsonObject {
+                putJsonObject("extensions") { put("nodes", JsonArray(extensionsOnServer.map { (pkg, installed) -> buildJsonObject { put("pkgName", pkg); put("isInstalled", installed) } })) }
+            }
+            "KarasuInstallExtension" in query -> installExtensionOnServer(variables["id"]!!.jsonPrimitive.content)
             "KarasuAddExtensionStore" in query ->
                 addExtensionStore(variables["indexUrl"]!!.jsonPrimitive.content, device) ?: return graphqlError("mock: repository not reachable")
             "KarasuRemoveExtensionStore" in query -> removeExtensionStore(variables["indexUrl"]!!.jsonPrimitive.content, device)
@@ -692,6 +696,14 @@ class MockSuwayomiServer(
             else -> return reply(200, buildJsonObject { put("errors", buildJsonArray { add(buildJsonObject { put("message", "mock: unknown operation") }) }) })
         }
         return reply(200, buildJsonObject { put("data", data) })
+    }
+
+    /** The extensions the server knows (pkgName to installed); a mock downloads nothing, it only records the install. */
+    private val extensionsOnServer = linkedMapOf<String, Boolean>()
+
+    private fun installExtensionOnServer(pkg: String): JsonObject {
+        if (extensionsOnServer.containsKey(pkg)) extensionsOnServer[pkg] = true
+        return buildJsonObject { putJsonObject("updateExtension") { putJsonObject("extension") { put("pkgName", pkg); put("isInstalled", true) } } }
     }
 
     private fun graphqlError(message: String) =

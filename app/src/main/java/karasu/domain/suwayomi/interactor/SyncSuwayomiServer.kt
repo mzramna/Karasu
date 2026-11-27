@@ -15,6 +15,9 @@ import karasu.domain.category.interactor.InsertCategories
 import karasu.domain.category.interactor.SetMangaCategories
 import karasu.domain.category.interactor.UpdateCategories
 import karasu.domain.category.models.CategoryUpdate
+import android.app.Application
+import eu.kanade.tachiyomi.extension.ExtensionInstallerJob
+import eu.kanade.tachiyomi.extension.ExtensionManager
 import karasu.domain.chapter.interactor.GetChapter
 import karasu.domain.chapter.interactor.UpdateChapter
 import karasu.domain.chapter.models.ChapterUpdate
@@ -90,6 +93,8 @@ class SyncSuwayomiServer(
     private val getExtensionRepo: GetExtensionRepo,
     private val createExtensionRepo: CreateExtensionRepo,
     private val deleteExtensionRepo: DeleteExtensionRepo,
+    private val extensionManager: ExtensionManager,
+    private val app: Application,
 ) {
 
     data class Summary(
@@ -111,6 +116,10 @@ class SyncSuwayomiServer(
         val reposPushed: Int = 0,
         val reposRemovedLocal: Int = 0,
         val reposRemovedRemote: Int = 0,
+        /** Extensions installed on the server because they were installed on this device. */
+        val extensionsPushed: Int = 0,
+        /** Extensions this device was asked to install because the server has them installed. */
+        val extensionsPulled: Int = 0,
         /** The server's log no longer reached back to this device, so this run reconciled by state alone. */
         val logReset: Boolean = false,
         /** Parts the server answered with an error. Reaching the server at all is a thrown exception. */
@@ -119,7 +128,8 @@ class SyncSuwayomiServer(
         val isIdle: Boolean
             get() = categoriesCreatedLocal + categoriesCreatedRemote + categoriesRenamedLocal + categoriesRenamedRemote + categoryLinksLocal + categoryLinksRemote +
                 chaptersPulled + chaptersPushed + mergedPulled + mergedPushed + deletionsApplied + deletionsPushed +
-                historyPulled + historyPushed + reposPulled + reposPushed + reposRemovedLocal + reposRemovedRemote == 0
+                historyPulled + historyPushed + reposPulled + reposPushed + reposRemovedLocal + reposRemovedRemote +
+                extensionsPushed + extensionsPulled == 0
     }
 
     private var summary = Summary()
@@ -148,6 +158,7 @@ class SyncSuwayomiServer(
             part("library") { syncLibrary() }
         }
         part("extension repos") { syncExtensionRepos() }
+        if (preferences.syncExtensions().get()) part("extensions") { syncExtensions() }
         part("operation log") { publishOperations() }
         // Everything this run read has been applied: only now may the server forget it.
         if (opsAvailable && summary.errors.isEmpty()) preferences.operationAckSeq().set(pulledSeq)
@@ -691,6 +702,52 @@ class SyncSuwayomiServer(
         val next = (local + remote - failed).sorted()
         preferences.extensionRepoSnapshot().set(json.encodeToString(ListSerializer(String.serializer()), next))
         summary = summary.copy(reposPulled = pulled, reposPushed = pushed, reposRemovedLocal = removedLocal, reposRemovedRemote = removedRemote)
+    }
+
+    /**
+     * Extensions installed on one side are installed on the other, as a union: nothing is uninstalled here
+     * because the server does not have it, and the server's installs are the ones this device trusts.
+     *
+     *  - app to server: an extension installed here and not on the server is asked of the server, if the
+     *    server's repositories have it;
+     *  - server to app: an extension the server has installed and this device does not is installed here
+     *    through the app's own installer (the system still asks for confirmation, as for any install);
+     *  - trust: an extension the server installed was already checked by the server's own installer, so the
+     *    untrusted extensions among them are trusted here, with the signature they arrived with. The app
+     *    only learns of an extension once it is loaded, so this happens on the sync after the install.
+     */
+    private suspend fun syncExtensions() {
+        val remote = api.extensions()
+        val remoteInstalled = remote.filter { it.isInstalled }.mapTo(mutableSetOf()) { it.pkgName }
+        val onServer = remote.mapTo(mutableSetOf()) { it.pkgName }
+        val localInstalled = extensionManager.installedExtensionsFlow.value.mapTo(mutableSetOf()) { it.pkgName }
+
+        var pushed = 0
+        for (pkg in localInstalled - remoteInstalled) {
+            if (pkg in onServer) {
+                api.installExtension(pkg)
+                pushed++
+            }
+        }
+
+        var pulled = 0
+        val missingHere = remoteInstalled - localInstalled
+        if (missingHere.isNotEmpty()) {
+            if (extensionManager.availableExtensionsFlow.value.isEmpty()) extensionManager.findAvailableExtensions()
+            val infos = extensionManager.availableExtensionsFlow.value
+                .filter { it.pkgName in missingHere && extensionManager.getInstallInfo(it.pkgName) == null }
+                .map { ExtensionManager.ExtensionInfo(it) }
+            if (infos.isNotEmpty()) {
+                ExtensionInstallerJob.startJob(app, infos)
+                pulled = infos.size
+            }
+        }
+
+        for (untrusted in extensionManager.untrustedExtensionsFlow.value.filter { it.pkgName in remoteInstalled }) {
+            extensionManager.trust(untrusted.pkgName, untrusted.versionCode, untrusted.signatureHash)
+        }
+
+        summary = summary.copy(extensionsPushed = pushed, extensionsPulled = pulled)
     }
 
     // endregion

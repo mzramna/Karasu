@@ -1,20 +1,29 @@
 package karasu.domain.suwayomi.interactor
 
+import android.app.Application
 import eu.kanade.tachiyomi.data.database.models.Category
 import eu.kanade.tachiyomi.data.database.models.Chapter
 import eu.kanade.tachiyomi.data.database.models.create
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.domain.manga.models.Manga
 import eu.kanade.tachiyomi.source.SourceManager
+import eu.kanade.tachiyomi.extension.ExtensionInstallerJob
+import eu.kanade.tachiyomi.extension.ExtensionManager
+import eu.kanade.tachiyomi.extension.model.Extension
+import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
+import io.mockk.just
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
 import karasu.data.suwayomi.RemoteCategory
 import karasu.data.suwayomi.RemoteChapter
 import karasu.data.suwayomi.RemoteManga
+import karasu.data.suwayomi.ServerExtension
 import karasu.data.suwayomi.ServerSyncApi
 import karasu.domain.category.interactor.GetCategories
 import karasu.domain.category.interactor.InsertCategories
@@ -28,6 +37,7 @@ import karasu.domain.extension.repo.interactor.DeleteExtensionRepo
 import karasu.domain.extension.repo.interactor.GetExtensionRepo
 import karasu.domain.extension.repo.model.ExtensionRepo
 import karasu.domain.history.interactor.GetHistory
+import kotlinx.coroutines.flow.MutableStateFlow
 import karasu.domain.history.interactor.UpsertHistory
 import karasu.domain.category.interactor.UpdateCategories
 import karasu.domain.operations.OperationLog
@@ -65,13 +75,15 @@ class SyncSuwayomiServerTest {
     private val getExtensionRepo = mockk<GetExtensionRepo>(relaxed = true)
     private val createExtensionRepo = mockk<CreateExtensionRepo>(relaxed = true)
     private val deleteExtensionRepo = mockk<DeleteExtensionRepo>(relaxed = true)
+    private val extensionManager = mockk<ExtensionManager>(relaxed = true)
+    private val app = mockk<Application>(relaxed = true)
 
     private val manga = Manga.create("/m", "Title", 3L).apply { id = 1L }
 
     private fun sync() = SyncSuwayomiServer(
         api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
         setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
-        updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
+        updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo, extensionManager, app,
     )
 
     private fun chapter(id: Long, url: String, read: Boolean = false, page: Int = 0): Chapter =
@@ -93,6 +105,10 @@ class SyncSuwayomiServerTest {
         preferences.syncMergedSources().set(false)
         preferences.syncCategories().set(false)
         preferences.syncProgress().set(false)
+        preferences.syncExtensions().set(false)
+        every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(emptyList())
+        every { extensionManager.availableExtensionsFlow } returns MutableStateFlow(emptyList())
+        every { extensionManager.untrustedExtensionsFlow } returns MutableStateFlow(emptyList())
         preferences.syncHistory().set(false)
         preferences.pushLocalDeletions().set(false)
         coEvery { getManga.awaitFavorites() } returns listOf(manga)
@@ -139,7 +155,7 @@ class SyncSuwayomiServerTest {
             ),
         )
 
-        val summary = sync().await()
+        val summary = runBlocking { sync().await() }
 
         coVerify { updateChapter.awaitAll(listOf(ChapterUpdate(id = 10, read = true, lastPageRead = 9))) }
         coVerify { api.updateChapters(listOf(ServerSyncApi.ChapterPatch(1002, true, 5))) }
@@ -184,7 +200,7 @@ class SyncSuwayomiServerTest {
         coEvery { getChapter.awaitAllRaw(1L, false) } returns listOf(downloaded)
         every { downloadManager.isChapterDownloaded(downloaded, manga, true) } returns true
 
-        val summary = sync().await()
+        val summary = runBlocking { sync().await() }
 
         val deleted = slot<List<Chapter>>()
         verify(exactly = 1) { downloadManager.deleteChapters(capture(deleted), manga, any(), true) }
@@ -205,7 +221,7 @@ class SyncSuwayomiServerTest {
         coEvery { insertCategories.awaitOne(any()) } returns 2L
         serverLibrary()
 
-        val summary = sync().await()
+        val summary = runBlocking { sync().await() }
 
         coVerify { api.createCategory("Action") }
         coVerify(exactly = 0) { api.createCategory("Default") }
@@ -267,7 +283,7 @@ class SyncSuwayomiServerTest {
         )
         coEvery { api.putHistory(any()) } throws karasu.data.suwayomi.ServerApiException(404, "HTTP 404")
 
-        val summary = sync().await()
+        val summary = runBlocking { sync().await() }
 
         assertTrue(summary.errors.any { it.contains("history") }, "the user is told why history was not shared")
         coVerify(exactly = 1) { api.putHistory(any()) }
@@ -303,7 +319,7 @@ class SyncSuwayomiServerTest {
         preferences.pushLocalDeletions().set(true)
         repos(local = listOf("https://a/repo"), remote = listOf("https://b/repo/repo.json"))
 
-        val summary = sync().await()
+        val summary = runBlocking { sync().await() }
 
         coVerify(exactly = 1) { api.addExtensionStore("https://a/repo/repo.json") }
         coVerify(exactly = 1) { createExtensionRepo.await("https://b/repo/repo.json") }
@@ -323,7 +339,7 @@ class SyncSuwayomiServerTest {
         coVerify(exactly = 0) { createExtensionRepo.await(any()) }
 
         preferences.pushLocalDeletions().set(true)
-        val summary = sync().await()
+        val summary = runBlocking { sync().await() }
         coVerify(exactly = 1) { api.removeExtensionStore("https://a/repo/index.min.json") }
         assertEquals(1, summary.reposRemovedRemote)
         assertEquals("[]", preferences.extensionRepoSnapshot().get())
@@ -338,7 +354,7 @@ class SyncSuwayomiServerTest {
         coVerify(exactly = 0) { api.addExtensionStore(any()) }
 
         preferences.applyRemoteDeletions().set(true)
-        val summary = sync().await()
+        val summary = runBlocking { sync().await() }
         coVerify(exactly = 1) { deleteExtensionRepo.await("https://a/repo") }
         assertEquals(1, summary.reposRemovedLocal)
         assertEquals("[]", preferences.extensionRepoSnapshot().get())
@@ -348,7 +364,7 @@ class SyncSuwayomiServerTest {
     fun `index and repo json spellings are the same repository`() = runBlocking {
         repos(local = listOf("https://a/repo/index.min.json"), remote = listOf("https://a/repo/repo.json"))
 
-        val summary = sync().await()
+        val summary = runBlocking { sync().await() }
 
         coVerify(exactly = 0) { api.addExtensionStore(any()) }
         coVerify(exactly = 0) { createExtensionRepo.await(any()) }
@@ -362,11 +378,88 @@ class SyncSuwayomiServerTest {
         coEvery { api.deletions(7) } returns listOf(DeletionEntry(9, "3", "/m", "/c1"))
         coEvery { api.extensionStores() } throws ServerApiException(200, "GraphQL: boom")
 
-        val summary = sync().await()
+        val summary = runBlocking { sync().await() }
 
         assertEquals(1, summary.errors.size)
         assertTrue(summary.errors.single().startsWith("extension repos"))
         assertEquals(9L, preferences.lastDeletionId().get())
+    }
+
+    // endregion
+
+    // region extensions
+
+    private fun installedHere(pkg: String) = mockk<Extension.Installed>(relaxed = true) { every { pkgName } returns pkg }
+
+    private fun availableHere(pkg: String) = mockk<Extension.Available>(relaxed = true) {
+        every { pkgName } returns pkg
+        every { apkName } returns "$pkg.apk"
+        every { name } returns pkg
+        every { versionCode } returns 1L
+        every { libVersion } returns 1.5
+    }
+
+    @Test
+    fun `an extension installed here is installed on the server when the server has it in its repositories`() {
+        preferences.syncExtensions().set(true)
+        every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(listOf(installedHere("eu.a.mango")))
+        coEvery { api.extensions() } returns listOf(ServerExtension("eu.a.mango", isInstalled = false))
+
+        val summary = runBlocking { sync().await() }
+
+        coVerify(exactly = 1) { api.installExtension("eu.a.mango") }
+        assertEquals(1, summary.extensionsPushed)
+        assertTrue(summary.errors.isEmpty())
+    }
+
+    @Test
+    fun `an extension the server has installed is installed here through the app's installer, and then trusted`() {
+        preferences.syncExtensions().set(true)
+        coEvery { api.extensions() } returns listOf(ServerExtension("eu.b.mangadex", isInstalled = true))
+        every { extensionManager.availableExtensionsFlow } returns MutableStateFlow(listOf(availableHere("eu.b.mangadex")))
+        every { extensionManager.getInstallInfo("eu.b.mangadex") } returns null
+        val untrusted = mockk<Extension.Untrusted>(relaxed = true) {
+            every { pkgName } returns "eu.b.mangadex"
+            every { versionCode } returns 7L
+            every { signatureHash } returns "abc123"
+        }
+        every { extensionManager.untrustedExtensionsFlow } returns MutableStateFlow(listOf(untrusted))
+        mockkObject(ExtensionInstallerJob.Companion)
+        try {
+            every { ExtensionInstallerJob.startJob(any(), any(), any()) } just Runs
+
+            val summary = runBlocking { sync().await() }
+
+            verify(exactly = 1) { ExtensionInstallerJob.startJob(app, match { infos -> infos.single().pkgName == "eu.b.mangadex" }, any()) }
+            coVerify(exactly = 1) { extensionManager.trust("eu.b.mangadex", 7L, "abc123") }
+            assertEquals(1, summary.extensionsPulled)
+            coVerify(exactly = 0) { api.installExtension(any()) }
+        } finally {
+            unmockkObject(ExtensionInstallerJob.Companion)
+        }
+    }
+
+    @Test
+    fun `nothing is uninstalled on either side when only one side has the extension`() {
+        preferences.syncExtensions().set(true)
+        every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(listOf(installedHere("eu.c.only.app")))
+        coEvery { api.extensions() } returns listOf(ServerExtension("eu.d.only.server", isInstalled = false))
+
+        val summary = runBlocking { sync().await() }
+
+        coVerify(exactly = 0) { api.installExtension(any()) }
+        verify(exactly = 0) { extensionManager.uninstallExtension(any()) }
+        assertEquals(0, summary.extensionsPushed)
+        assertEquals(0, summary.extensionsPulled)
+    }
+
+    @Test
+    fun `with the extensions switch off the sync does not look at them`() {
+        preferences.syncExtensions().set(false)
+
+        sync()
+
+        coVerify(exactly = 0) { api.extensions() }
     }
 
     // endregion

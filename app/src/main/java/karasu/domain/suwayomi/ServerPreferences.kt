@@ -50,6 +50,9 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
 
     fun syncMergedSources() = preferenceStore.getBoolean("suwayomi_sync_merged", true)
 
+    /** Whether extensions installed on one side are installed on the other (the server installs, the app trusts them). */
+    fun syncExtensions() = preferenceStore.getBoolean("suwayomi_sync_extensions", true)
+
     /** Whether chapters deleted from the server's side are also deleted from this device. */
     fun applyRemoteDeletions() = preferenceStore.getBoolean("suwayomi_apply_deletions", true)
 

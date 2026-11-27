@@ -3,6 +3,7 @@ package karasu.core.di
 import eu.kanade.tachiyomi.source.MergedSourceFallback
 import eu.kanade.tachiyomi.util.chapter.MergedSourceSync
 import android.app.Application
+import eu.kanade.tachiyomi.extension.ExtensionManager
 import org.koin.dsl.module
 import karasu.data.category.CategoryRepositoryImpl
 import karasu.data.chapter.ChapterRepositoryImpl
@@ -108,7 +109,7 @@ fun domainModule() = module {
     factory {
         SyncSuwayomiServer(
             get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
-            get(), get(), get(),
+            get(), get(), get(), get<ExtensionManager>(), get<Application>(),
         )
     }
 

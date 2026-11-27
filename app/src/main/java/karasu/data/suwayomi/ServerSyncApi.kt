@@ -52,6 +52,9 @@ import okhttp3.Response
 import okio.BufferedSink
 import okio.source
 
+/** An extension as the server has it: its package name and whether the server has it installed. */
+data class ServerExtension(val pkgName: String, val isInstalled: Boolean)
+
 /** The server answered, but not with what was asked for. [code] is the HTTP status. */
 class ServerApiException(val code: Int, message: String) : IOException(message)
 
@@ -385,6 +388,16 @@ class ServerSyncApi(
     /** The index urls of the extension repositories the server has, as it stores them. */
     suspend fun extensionStores(): List<String> =
         json.decodeFromJsonElement<ExtensionStoresData>(graphql(ServerGraphQl.EXTENSION_STORES)).extensionStores.nodes.map { it.indexUrl }
+
+    /** Every extension the server knows about (about 1700 on a server with the official repositories). */
+    suspend fun extensions(): List<ServerExtension> =
+        json.decodeFromJsonElement<ExtensionsData>(graphql(ServerGraphQl.EXTENSIONS)).extensions.nodes
+            .map { ServerExtension(it.pkgName, it.isInstalled) }
+
+    /** Asks the server to install the extension with this package name; the server downloads it. */
+    suspend fun installExtension(pkgName: String) {
+        graphql(ServerGraphQl.INSTALL_EXTENSION, buildJsonObject { put("id", pkgName) })
+    }
 
     suspend fun addExtensionStore(indexUrl: String) {
         graphql(ServerGraphQl.ADD_EXTENSION_STORE, buildJsonObject { put("indexUrl", indexUrl) })

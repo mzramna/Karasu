@@ -181,6 +181,7 @@ class LiveDevice(
         syncMergedSources().set(true)
         applyRemoteDeletions().set(true)
         pushLocalDeletions().set(true)
+        syncExtensions().set(false)
     }
 
     /** How far this device's clock is from the real one; tests move it to say "I did this a while ago". */
@@ -215,6 +216,13 @@ class LiveDevice(
     private val mergedSources = MergedSources(mergedRepository, operations)
     private val getExtensionRepo = GetExtensionRepo(repoRepository)
     private val deleteExtensionRepo = DeleteExtensionRepo(repoRepository, operations)
+
+    // extensions: the live scenarios do not install anything on a phone, so this device has none
+    private val extensionManager = mockk<eu.kanade.tachiyomi.extension.ExtensionManager>(relaxed = true) {
+        every { installedExtensionsFlow } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+        every { availableExtensionsFlow } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+        every { untrustedExtensionsFlow } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+    }
 
     /**
      * Adding a repository fetches its index over https from the internet; here it is fetched from [Live.repos]
@@ -437,6 +445,7 @@ class LiveDevice(
             api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
             setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
             updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
+            extensionManager, mockk(relaxed = true),
         ).await()
     }
 }

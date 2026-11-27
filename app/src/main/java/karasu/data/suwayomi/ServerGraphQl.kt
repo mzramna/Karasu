@@ -41,6 +41,22 @@ internal object ServerGraphQl {
         }
     """
 
+    /** Every extension the server knows, installed or not; `isInstalled` is what the server has on its side. */
+    const val EXTENSIONS = """
+        query KarasuExtensions {
+          extensions { nodes { pkgName isInstalled } }
+        }
+    """
+
+    /** Installs an extension on the server. The server's id for an extension is its package name. */
+    const val INSTALL_EXTENSION = """
+        mutation KarasuInstallExtension(${'$'}id: String!) {
+          updateExtension(input: {id: ${'$'}id, patch: {install: true}}) {
+            extension { pkgName isInstalled }
+          }
+        }
+    """
+
     const val ADD_EXTENSION_STORE = """
         mutation KarasuAddExtensionStore(${'$'}indexUrl: String!) {
           addExtensionStore(input: {indexUrl: ${'$'}indexUrl}) {
@@ -144,6 +160,12 @@ internal data class ExtensionStoresData(val extensionStores: Nodes<RemoteExtensi
 
 @Serializable
 internal data class RemoteExtensionStore(val indexUrl: String)
+
+@Serializable
+internal data class ExtensionsData(val extensions: Nodes<RemoteExtension>)
+
+@Serializable
+internal data class RemoteExtension(val pkgName: String, val isInstalled: Boolean = false)
 
 @Serializable
 internal data class CategoriesData(val categories: Nodes<RemoteCategory>)
