@@ -125,6 +125,21 @@ class ServerPreferences(private val preferenceStore: PreferenceStore) {
 
     /** This device's own operation log, as JSON (see `OperationLog`). */
     /**
+     * Whether a sync that would remove something stops and asks first (on by default). With it off the sync removes what
+     * its rules say, as before.
+     */
+    fun confirmRemovals() = preferenceStore.getBoolean("suwayomi_confirm_removals", true)
+
+    /** The removals the last sync found and did not do, as JSON (a list of `PlannedRemoval`), waiting for the user's answer. */
+    fun pendingRemovals() = preferenceStore.getString(Preference.appStateKey("suwayomi_pending_removals"), "")
+
+    /** The keys of the removals the user approved, as JSON: the next sync does exactly these and then forgets them. */
+    fun approvedRemovals() = preferenceStore.getString(Preference.appStateKey("suwayomi_approved_removals"), "")
+
+    /** A fingerprint of the pending list the user said "not now" to, so the same list is not asked about again. */
+    fun declinedRemovals() = preferenceStore.getString(Preference.appStateKey("suwayomi_declined_removals"), "")
+
+    /**
      * The last server sequence this device had fully applied when a sync finished without errors. It is what the next
      * pull sends as `ack`: the server forgets an operation only when every device has acknowledged it.
      */

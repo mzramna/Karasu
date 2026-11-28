@@ -1,6 +1,8 @@
 package eu.kanade.tachiyomi.data.suwayomi
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -12,8 +14,13 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkerParameters
 import co.touchlab.kermit.Logger
+import eu.kanade.tachiyomi.data.notification.Notifications
+import eu.kanade.tachiyomi.ui.main.MainActivity
+import eu.kanade.tachiyomi.util.system.notificationBuilder
+import eu.kanade.tachiyomi.util.system.notificationManager
 import eu.kanade.tachiyomi.util.system.workManager
 import java.util.concurrent.TimeUnit
+import karasu.domain.suwayomi.RemovalConfirmation
 import karasu.domain.suwayomi.ServerPreferences
 import karasu.domain.suwayomi.interactor.SyncSuwayomiServer
 import karasu.i18n.MR
@@ -37,9 +44,13 @@ class ServerSyncJob(context: Context, workerParams: WorkerParameters) :
         if (!preferences.enabled().get() || preferences.primaryUrl().get().isBlank()) return Result.success()
 
         return try {
-            val result = Injekt.get<SyncSuwayomiServer>().await()
+            val confirmation = RemovalConfirmation(preferences)
+            // Removals are done only when the user approved them (or has turned the question off).
+            val result = Injekt.get<SyncSuwayomiServer>().await(confirmation.approvedForNextRun())
+            confirmation.recordRun(result)
             Logger.i { "Suwayomi synced: $result" }
             record(preferences, describe(result))
+            if (confirmation.needsAnswer()) notifyRemovalsWaiting(result.heldRemovals.size)
             Result.success()
         } catch (e: Exception) {
             Logger.e(e) { "Suwayomi sync failed" }
@@ -52,6 +63,24 @@ class ServerSyncJob(context: Context, workerParams: WorkerParameters) :
             )
             Result.retry()
         }
+    }
+
+    /** The sync does not stop on a question nobody can answer in the background: it leaves the removals and says so. */
+    private fun notifyRemovalsWaiting(count: Int) {
+        val open = PendingIntent.getActivity(
+            applicationContext,
+            0,
+            Intent(applicationContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notification = applicationContext.notificationBuilder(Notifications.CHANNEL_COMMON) {
+            setSmallIcon(android.R.drawable.stat_notify_sync)
+            setContentTitle(applicationContext.getString(MR.strings.suwayomi_removals_notification_title))
+            setContentText(applicationContext.getString(MR.strings.suwayomi_removals_notification_text, count))
+            setContentIntent(open)
+            setAutoCancel(true)
+        }.build()
+        applicationContext.notificationManager.notify(Notifications.ID_SYNC_REMOVALS, notification)
     }
 
     private fun record(preferences: ServerPreferences, summary: String) {
@@ -72,8 +101,13 @@ class ServerSyncJob(context: Context, workerParams: WorkerParameters) :
                 result.deletionsApplied,
             )
         }
-        if (result.errors.isEmpty()) return base
-        return base + " · " + applicationContext.getString(
+        val held = if (result.heldRemovals.isEmpty()) {
+            base
+        } else {
+            base + " · " + applicationContext.getString(MR.strings.suwayomi_sync_removals_held, result.heldRemovals.size)
+        }
+        if (result.errors.isEmpty()) return held
+        return held + " · " + applicationContext.getString(
             MR.strings.suwayomi_sync_partial,
             result.errors.joinToString("; "),
         )

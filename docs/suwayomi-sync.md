@@ -191,6 +191,32 @@ depois da remoção, dois aparelhos, repositório que o servidor não consegue l
 servidor real (H2 e PostgreSQL) em `scripts/live-sync-test.sh`; os repositórios dos testes vêm de um `RepoHost` local, que o
 servidor consulta na mesma máquina.
 
+## Confirmar remoções
+
+Por padrão (opção **Confirmar remoções**, ligada) uma sincronização que **removeria** algo não o faz: ela anota o que
+encontrou, deixa tudo como estava e pergunta. Vale nos dois sentidos, ao **receber** (o que seria removido neste aparelho) e
+ao **enviar** (o que seria removido no servidor e nos outros aparelhos), e para sete coisas: capítulos baixados, obras
+tiradas da biblioteca, repositórios de extensões, fontes mescladas, itens do histórico e obras tiradas de categorias.
+Acrescentar, atualizar e marcar como lido/não lido nunca pedem confirmação.
+
+Como funciona, de ponta a ponta:
+- O sync recebe o conjunto de remoções aprovadas (`SyncSuwayomiServer.await(approvedRemovals)`): `null` deixa tudo passar (a
+  opção desligada); um conjunto deixa passar só as remoções com aquelas chaves. As outras ficam em `Summary.heldRemovals`.
+- Uma remoção retida **não avança nada que dependa dela**: os snapshots, o cursor do log, a confirmação (`ack`) e o cursor das
+  exclusões ficam como estavam, e as operações de remoção locais não são publicadas, para a mesma remoção ser achada de novo
+  na rodada seguinte. Uma obra cuja remoção da biblioteca está retida também não é reimportada.
+- O job (`ServerSyncJob`) guarda a lista em `suwayomi_pending_removals` e, se ela é nova, mostra uma notificação. Quando o app
+  está aberto, a tela principal mostra o diálogo com a lista agrupada por lado e tipo, com exemplos.
+- **Remover e sincronizar** aprova exatamente as chaves da lista mostrada (`suwayomi_approved_removals`) e dispara um sync;
+  uma remoção que apareceu depois da lista não é coberta e é perguntada em seguida. **Agora não** deixa tudo como está e não
+  pergunta de novo pela mesma lista (`suwayomi_declined_removals`); uma lista diferente volta a perguntar. A lista pendente
+  continua acessível em Configurações > Sincronização, no item "Remoções aguardando confirmação".
+- Com a opção desligada o sync remove como antes (as opções "enviar exclusões" e "aplicar exclusões do servidor" continuam
+  valendo por cima).
+
+Testes: `SyncSuwayomiServerTest` (cada tipo retido e depois aprovado, cursor sem avanço), `RemovalConfirmationTest` (a conversa
+com o usuário) e `SyncRemovalConfirmationLiveTest` (6 cenários no mock e no servidor real em H2 e PostgreSQL).
+
 ## Extensões instaladas
 
 As extensões instaladas são a **união** dos dois lados; desinstalar nunca se propaga. O que o app tem e o servidor não é

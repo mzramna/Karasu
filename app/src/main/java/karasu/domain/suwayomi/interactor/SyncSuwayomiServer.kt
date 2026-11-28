@@ -50,6 +50,9 @@ import karasu.domain.suwayomi.models.DownloadPolicy
 import karasu.domain.suwayomi.models.HistoryEntry
 import karasu.domain.suwayomi.models.MangaRef
 import karasu.domain.suwayomi.models.MergedSource
+import karasu.domain.suwayomi.models.PlannedRemoval
+import karasu.domain.suwayomi.models.RemovalKind
+import karasu.domain.suwayomi.models.RemovalSide
 import karasu.domain.suwayomi.models.ServerOperation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
@@ -130,25 +133,58 @@ class SyncSuwayomiServer(
         val reposRemovedRemote: Int = 0,
         /** The server's log no longer reached back to this device, so this run reconciled by state alone. */
         val logReset: Boolean = false,
+        /** Removals found and not done, waiting for the user's approval (see [SyncSuwayomiServer.await]). */
+        val heldRemovals: List<PlannedRemoval> = emptyList(),
         /** Parts the server answered with an error. Reaching the server at all is a thrown exception. */
         val errors: List<String> = emptyList(),
     ) {
         val isIdle: Boolean
             get() = categoriesCreatedLocal + categoriesCreatedRemote + categoriesRenamedLocal + categoriesRenamedRemote + categoryLinksLocal + categoryLinksRemote +
                 chaptersPulled + chaptersPushed + mergedPulled + mergedPushed + deletionsApplied + deletionsPushed +
-                historyPulled + historyPushed + reposPulled + reposPushed + reposRemovedLocal + reposRemovedRemote == 0
+                historyPulled + historyPushed + reposPulled + reposPushed + reposRemovedLocal + reposRemovedRemote + heldRemovals.size == 0
     }
 
     private var summary = Summary()
 
-    suspend fun await(): Summary {
-        if (!api.isEnabled) return Summary()
-        // Everything this run writes locally is somebody else's change arriving, not the user's own.
-        return withContext(SyncOrigin()) { run() }
+    // region removals the user has to approve
+
+    /** The keys of the removals this run may do; null lets every removal through. */
+    private var approvedRemovals: Set<String>? = null
+
+    private val held = mutableListOf<PlannedRemoval>()
+
+    /**
+     * Asks whether a removal may be done now. One that has not been approved is remembered in [held] and the caller must
+     * leave things as they are, including the snapshot it keeps, so the next run finds the same removal again.
+     */
+    private fun allowRemoval(kind: RemovalKind, side: RemovalSide, key: String, label: String): Boolean {
+        val approved = approvedRemovals ?: return true
+        if (key in approved) return true
+        if (held.none { it.key == key }) held += PlannedRemoval(kind, side, key, label)
+        return false
     }
 
-    private suspend fun run(): Summary {
+    private fun anyHeld() = held.isNotEmpty()
+
+    // endregion
+
+    /**
+     * Runs the sync. [approvedRemovals] says which removals this run may do: null lets every removal through, and a set
+     * lets through only the removals with those keys. Any other removal is not done: it is listed in
+     * [Summary.heldRemovals], and everything the run would have remembered about it (the snapshots, the log cursor and
+     * the acknowledgement) is left as it was, so the next run finds the very same removal again.
+     */
+    suspend fun await(approvedRemovals: Set<String>? = null): Summary {
+        if (!api.isEnabled) return Summary()
+        // Everything this run writes locally is somebody else's change arriving, not the user's own.
+        return withContext(SyncOrigin()) { run(approvedRemovals) }
+    }
+
+    private suspend fun run(approved: Set<String>?): Summary {
         summary = Summary()
+        approvedRemovals = approved
+        held.clear()
+        val cursorBefore = preferences.lastOperationSeq().get()
         removedBecauseOfServer.clear()
         remoteLatest.clear()
         remoteAction.clear()
@@ -167,8 +203,14 @@ class SyncSuwayomiServer(
         part("extension repos") { syncExtensionRepos() }
         part("extensions") { syncExtensions() }
         part("operation log") { publishOperations() }
-        // Everything this run read has been applied: only now may the server forget it.
-        if (opsAvailable && summary.errors.isEmpty()) preferences.operationAckSeq().set(pulledSeq)
+        if (anyHeld()) {
+            // Something this run read is still to be acted on: read it again next time, and do not say it was applied.
+            preferences.lastOperationSeq().set(cursorBefore)
+        } else if (opsAvailable && summary.errors.isEmpty()) {
+            // Everything this run read has been applied: only now may the server forget it.
+            preferences.operationAckSeq().set(pulledSeq)
+        }
+        summary = summary.copy(heldRemovals = held.toList())
         return summary
     }
 
@@ -284,7 +326,8 @@ class SyncSuwayomiServer(
      */
     private suspend fun publishOperations() {
         if (!opsAvailable) return
-        val pending = operations.pending()
+        // A removal this device did and is still waiting to be approved is not announced: the others would act on it.
+        val pending = operations.pending().filter { !anyHeld() || it.action != OpAction.REMOVE }
         if (pending.isEmpty()) return
         val device = preferences.ensureDeviceId()
         val categoryMap = loadCategoryMap()
@@ -389,11 +432,22 @@ class SyncSuwayomiServer(
             if (cursor < 0) preferences.lastDeletionId().set(0)
             return
         }
+        var heldHere = false
         if (cursor >= 0) {
             var applied = 0
             entries.forEach {
                 val key = chapterKey(SyncMath.mangaKey(it.sourceId, it.mangaUrl), it.chapterUrl)
                 if (key in skip) return@forEach
+                // Only a chapter that is downloaded here is something to remove: asking about the others would be noise.
+                if (!isDownloadedLocally(it.sourceId, it.mangaUrl, it.chapterUrl)) return@forEach
+                if (!allowRemoval(
+                        RemovalKind.DOWNLOADED_CHAPTER, RemovalSide.THIS_DEVICE, "delete-here:$key",
+                        "${chapterLabel(it.sourceId, it.mangaUrl, it.chapterUrl)}: downloaded copy on this device",
+                    )
+                ) {
+                    heldHere = true
+                    return@forEach
+                }
                 if (deleteLocally(it.sourceId, it.mangaUrl, it.chapterUrl)) {
                     applied++
                     removedBecauseOfServer += key
@@ -401,13 +455,35 @@ class SyncSuwayomiServer(
             }
             summary = summary.copy(deletionsApplied = summary.deletionsApplied + applied)
         }
-        preferences.lastDeletionId().set(entries.maxOf { it.id })
+        // With one still waiting, the cursor stays: the others are read again next time and found already done.
+        if (!heldHere) preferences.lastDeletionId().set(entries.maxOf { it.id })
     }
 
     /** Chapters this run deleted because the server said so; they are not this device's own deletions. */
     private val removedBecauseOfServer = mutableSetOf<String>()
 
     private fun chapterKey(mangaKey: String, chapterUrl: String) = "$mangaKey|$chapterUrl"
+
+    private suspend fun isDownloadedLocally(sourceId: String, mangaUrl: String, chapterUrl: String): Boolean {
+        val source = SyncMath.parseSourceId(sourceId) ?: return false
+        val manga = getManga.awaitByUrlAndSource(mangaUrl, source) ?: return false
+        val mangaId = manga.id ?: return false
+        val chapter = getChapter.awaitAllRaw(mangaId, false).firstOrNull { it.url == chapterUrl } ?: return false
+        return downloadManager.isChapterDownloaded(chapter, manga, skipCache = true)
+    }
+
+    /** `Title - Chapter name`, as far as this device knows them; the urls when it does not. */
+    private suspend fun chapterLabel(sourceId: String, mangaUrl: String, chapterUrl: String): String {
+        val source = SyncMath.parseSourceId(sourceId)
+        val manga = source?.let { getManga.awaitByUrlAndSource(mangaUrl, it) }
+        val chapter = manga?.id?.let { id -> getChapter.awaitAllRaw(id, false).firstOrNull { it.url == chapterUrl } }
+        return "${manga?.safeTitle() ?: mangaUrl} - ${chapter?.safeName() ?: chapterUrl}"
+    }
+
+    // A label is only for the confirmation and must never be the reason a sync fails: the name or title may not be set.
+    private fun Chapter.safeName(): String = runCatching { name }.getOrNull()?.takeIf { it.isNotBlank() } ?: url
+
+    private fun Manga.safeTitle(): String = runCatching { title }.getOrNull()?.takeIf { it.isNotBlank() } ?: url
 
     private suspend fun deleteLocally(sourceId: String, mangaUrl: String, chapterUrl: String): Boolean {
         val source = SyncMath.parseSourceId(sourceId) ?: return false
@@ -435,8 +511,10 @@ class SyncSuwayomiServer(
         val previous = if (raw.isBlank()) null else decode(raw) { text ->
             json.decodeFromString(linkSnapshotSerializer, text).mapValues { (_, v) -> v.toSet() }
         }
-        saveDownloadedSnapshot(current)
-        if (previous == null) return
+        if (previous == null) {
+            saveDownloadedSnapshot(current)
+            return
+        }
 
         val gone = mutableListOf<Triple<String, String, String>>() // source, manga url, chapter url
         val byKey = getManga.awaitFavorites().associateBy { SyncMath.mangaKey(it.source, it.url) }
@@ -446,9 +524,23 @@ class SyncSuwayomiServer(
             urls.filter { it !in still && chapterKey(mangaKey, it) !in removedBecauseOfServer }
                 .forEach { gone += Triple(manga.source.toString(), manga.url, it) }
         }
-        if (gone.isEmpty()) return
+        if (gone.isEmpty()) {
+            saveDownloadedSnapshot(current)
+            return
+        }
 
-        val ids = gone.mapNotNull { (source, mangaUrl, chapterUrl) ->
+        // Telling the server makes the other devices delete their copies: that is the removal to be approved.
+        val allowed = gone.filter { (source, mangaUrl, chapterUrl) ->
+            allowRemoval(
+                RemovalKind.DOWNLOADED_CHAPTER, RemovalSide.SERVER, "delete-others:${chapterKey(SyncMath.mangaKey(source, mangaUrl), chapterUrl)}",
+                "${byKey[SyncMath.mangaKey(source, mangaUrl)]?.safeTitle() ?: mangaUrl} - $chapterUrl: downloaded copy on the server's other devices",
+            )
+        }
+        // The picture of what is downloaded moves only when nothing is waiting, or the held deletions are forgotten.
+        if (allowed.size == gone.size) saveDownloadedSnapshot(current)
+        if (allowed.isEmpty()) return
+
+        val ids = allowed.mapNotNull { (source, mangaUrl, chapterUrl) ->
             SyncMath.parseSourceId(source)?.let { api.lookupChapter(it, mangaUrl, chapterUrl)?.chapterId }
         }
         if (ids.isEmpty()) return
@@ -457,7 +549,7 @@ class SyncSuwayomiServer(
 
         // Read our own announcements back so the cursor moves past them without applying them here.
         if (preferences.applyRemoteDeletions().get()) {
-            applyDeletions(skip = gone.mapTo(mutableSetOf()) { (source, mangaUrl, chapterUrl) ->
+            applyDeletions(skip = allowed.mapTo(mutableSetOf()) { (source, mangaUrl, chapterUrl) ->
                 chapterKey(SyncMath.mangaKey(source, mangaUrl), chapterUrl)
             })
         }
@@ -528,6 +620,24 @@ class SyncSuwayomiServer(
             val remote = remoteGroups[key]?.sources.orEmpty().toEntries()
                 .filterNot { it.sourceId == manga.source.toString() }
             val outcome = SyncMath.mergeMerged(snapshot[key], local, remote)
+
+            // A source that leaves the group on either side is a removal; a changed url or order is not.
+            val staying = outcome.result.mapTo(mutableSetOf()) { it.sourceId }
+            var blocked = false
+            if (outcome.changeRemote) {
+                for (e in remote.filter { it.sourceId !in staying }) {
+                    if (!allowRemoval(RemovalKind.MERGED_SOURCE, RemovalSide.SERVER, "merged-server:$key|${e.sourceId}", "${manga.safeTitle()}: merged source ${e.sourceId} on the server")) blocked = true
+                }
+            }
+            if (outcome.changeLocal) {
+                for (e in local.filter { it.sourceId !in staying }) {
+                    if (!allowRemoval(RemovalKind.MERGED_SOURCE, RemovalSide.THIS_DEVICE, "merged-here:$key|${e.sourceId}", "${manga.safeTitle()}: merged source ${e.sourceId} on this device")) blocked = true
+                }
+            }
+            if (blocked) {
+                snapshot[key]?.let { newSnapshot[key] = it } // what was agreed stays, so the removal is found again
+                continue
+            }
 
             if (outcome.changeRemote) {
                 val sources = outcome.result.mapIndexed { rank, e ->
@@ -725,7 +835,7 @@ class SyncSuwayomiServer(
         for (base in localByBase.keys - remoteByBase.keys) {
             if (removedOnServerByLog(base)) {
                 // the log says it: someone removed it there after anything this device did with it
-                if (preferences.applyRemoteDeletions().get()) {
+                if (preferences.applyRemoteDeletions().get() && allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.THIS_DEVICE, "repo-here:$base", "Extension repository $base: removed on the server, to be removed on this device")) {
                     deleteExtensionRepo.await(localByBase.getValue(base))
                     local -= base
                     removedLocal++
@@ -736,7 +846,9 @@ class SyncSuwayomiServer(
                 addRemote(base)
             } else if (winner(remoteKey(base), operations.latest(OpEntity.EXTENSION_REPO, name = base)) == Side.LOCAL) {
                 addRemote(base) // removed on the server, but this device re-added it later
-            } else if (preferences.applyRemoteDeletions().get()) {
+            } else if (preferences.applyRemoteDeletions().get() &&
+                allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.THIS_DEVICE, "repo-here:$base", "Extension repository $base: removed on the server, to be removed on this device")
+            ) {
                 deleteExtensionRepo.await(localByBase.getValue(base))
                 local -= base
                 removedLocal++
@@ -746,7 +858,7 @@ class SyncSuwayomiServer(
             val indexUrl = remoteByBase.getValue(base)
             if (removedHereByLog(base, indexUrl)) {
                 // the log says it: this device removed it after anything the server did with it
-                if (preferences.pushLocalDeletions().get()) {
+                if (preferences.pushLocalDeletions().get() && allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.SERVER, "repo-server:$base", "Extension repository $base: removed here, to be removed on the server")) {
                     api.removeExtensionStore(indexUrl)
                     remote -= base
                     removedRemote++
@@ -755,7 +867,9 @@ class SyncSuwayomiServer(
                 addLocal(base, indexUrl)
             } else if (winner("repo:$indexUrl", operations.latest(OpEntity.EXTENSION_REPO, name = base)) == Side.REMOTE) {
                 addLocal(base, indexUrl) // removed here, but the server re-added it later
-            } else if (preferences.pushLocalDeletions().get()) {
+            } else if (preferences.pushLocalDeletions().get() &&
+                allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.SERVER, "repo-server:$base", "Extension repository $base: removed here, to be removed on the server")
+            ) {
                 api.removeExtensionStore(indexUrl)
                 remote -= base
                 removedRemote++
@@ -789,11 +903,18 @@ class SyncSuwayomiServer(
         // A pair that left this device's library since the last sync was taken out on purpose: take
         // it out of the server's library too, before the walk below could bring it back.
         val lastLibrary = loadLibrarySnapshot()
+        // Works whose removal is waiting for approval: they stay in the snapshot, and the walk below must not bring them back.
+        val heldWorks = mutableSetOf<String>()
         if (lastLibrary != null && local.isNotEmpty()) {
             for (key in lastLibrary) {
                 if (key in local) continue
                 val sourceId = key.substringBefore('|').toLongOrNull() ?: continue
-                api.lookupManga(sourceId, key.substringAfter('|'))?.let { api.removeFromLibrary(it.mangaId) }
+                val onServer = api.lookupManga(sourceId, key.substringAfter('|')) ?: continue
+                if (allowRemoval(RemovalKind.LIBRARY_WORK, RemovalSide.SERVER, "library-server:$key", "${key.substringAfter('|')}: out of the library on the server")) {
+                    api.removeFromLibrary(onServer.mangaId)
+                } else {
+                    heldWorks += key
+                }
             }
         }
         val linkSnapshot = loadLinkSnapshot()
@@ -815,6 +936,7 @@ class SyncSuwayomiServer(
             val historyPuts = mutableListOf<HistoryEntry>()
             for (remote in page) {
                 val key = SyncMath.mangaKey(remote.sourceId, remote.url)
+                if (key in heldWorks) continue
                 val manga = local[key] ?: importManga(remote)?.also { local[key] = it } ?: continue
                 cacheCover(manga, remote)
                 if (categories != null) {
@@ -853,7 +975,7 @@ class SyncSuwayomiServer(
             }
         }
 
-        saveLibrarySnapshot(local.values)
+        saveLibrarySnapshot(local.values, heldWorks)
         if (categories != null) saveLinkSnapshot(newLinkSnapshot)
         if (progress) saveProgressSnapshot(newProgressSnapshot)
         if (history) saveHistorySnapshot(newHistorySnapshot)
@@ -1069,6 +1191,16 @@ class SyncSuwayomiServer(
             // A category that exists on neither side after reconcile cannot be linked.
             .filterTo(mutableSetOf()) { it in map.localIdByKey && it in map.remoteIdByKey }
 
+        // Taking a work out of a category, on either side, is a removal; adding one is not.
+        var blocked = false
+        for (category in localKeys - merged) {
+            if (!allowRemoval(RemovalKind.CATEGORY_LINK, RemovalSide.THIS_DEVICE, "link-here:${manga.source}|${manga.url}|$category", "${manga.safeTitle()}: out of category $category on this device")) blocked = true
+        }
+        for (category in remoteKeys - merged) {
+            if (!allowRemoval(RemovalKind.CATEGORY_LINK, RemovalSide.SERVER, "link-server:${manga.source}|${manga.url}|$category", "${manga.safeTitle()}: out of category $category on the server")) blocked = true
+        }
+        if (blocked) return Triple(0, 0, base) // nothing changes for this work, and what was agreed stays
+
         var changedLocal = 0
         if (merged != localKeys) {
             // setCategories replaces every link, so what this sync does not manage (rule-based
@@ -1177,6 +1309,20 @@ class SyncSuwayomiServer(
                 null -> SyncMath.mergeHistory(baseValue, local, remoteValue)
             }
 
+            // A chapter leaving the history, here or on the server, is a removal; a newer reading time is not.
+            val entry = "${manga.source}|${manga.url}|${chapter.url}"
+            var blockedHistory = false
+            if (outcome.changeLocal && outcome.result == 0L && local > 0) {
+                if (!allowRemoval(RemovalKind.HISTORY_ENTRY, RemovalSide.THIS_DEVICE, "history-here:$entry", "${manga.safeTitle()} - ${chapter.safeName()}: out of the history on this device")) blockedHistory = true
+            }
+            if (outcome.changeRemote && outcome.result == 0L && remoteValue > 0) {
+                if (!allowRemoval(RemovalKind.HISTORY_ENTRY, RemovalSide.SERVER, "history-server:$entry", "${manga.safeTitle()} - ${chapter.safeName()}: out of the history on the server")) blockedHistory = true
+            }
+            if (blockedHistory) {
+                if (baseValue > 0) agreed[chapter.url] = baseValue // what was agreed stays, so the removal is found again
+                continue
+            }
+
             if (outcome.changeLocal) {
                 // Nothing to write when removing a chapter that is not in the history here.
                 if (outcome.result > 0 || local > 0) upsertHistory.await(chapterId, outcome.result * MILLIS, 0L)
@@ -1249,8 +1395,10 @@ class SyncSuwayomiServer(
         }
     }
 
-    private fun saveLibrarySnapshot(library: Collection<Manga>) {
-        preferences.librarySnapshot().set(json.encodeToString(librarySnapshotSerializer, library.map { SyncMath.mangaKey(it.source, it.url) }))
+    private fun saveLibrarySnapshot(library: Collection<Manga>, alsoKeep: Set<String> = emptySet()) {
+        preferences.librarySnapshot().set(
+            json.encodeToString(librarySnapshotSerializer, library.map { SyncMath.mangaKey(it.source, it.url) } + alsoKeep),
+        )
     }
 
     private val linkSnapshotSerializer = MapSerializer(String.serializer(), ListSerializer(String.serializer()))

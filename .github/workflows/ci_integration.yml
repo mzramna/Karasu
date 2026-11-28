@@ -2,7 +2,7 @@ name: CI Integration
 
 # Roda o app contra um Suwayomi-Server de verdade (o fork) em H2 e em PostgreSQL: categorias, progresso,
 # histórico, fontes mescladas, downloads/exclusões, backups e política, nos dois sentidos.
-# Os testes são SyncLiveBidirectionalTest, ServerSyncApiLiveTest, SyncExtensionReposLiveTest, SyncOperationLogTest e SyncShelfLiveTest; scripts/live-sync-test.sh sobe o servidor.
+# Os testes são SyncLiveBidirectionalTest, ServerSyncApiLiveTest, SyncExtensionReposLiveTest, SyncOperationLogTest, SyncRemovalConfirmationLiveTest e SyncShelfLiveTest; scripts/live-sync-test.sh sobe o servidor.
 on:
   push:
     branches: ["**"]

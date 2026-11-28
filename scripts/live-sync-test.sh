@@ -76,5 +76,5 @@ curl -fsS -u "$USER_NAME:$USER_PASS" "http://127.0.0.1:$PORT/api/v1/karasu/healt
 cd "$HERE/.."
 KARASU_LIVE_URL="http://127.0.0.1:$PORT" KARASU_LIVE_USER="$USER_NAME" KARASU_LIVE_PASS="$USER_PASS" \
 KARASU_LIVE_MANGA_URL=/live/m30 KARASU_LIVE_DOWNLOADED=/live/m30/c2 KARASU_LIVE_MISSING=/live/m30/c3 \
-  ./gradlew :app:testStandardDebugUnitTest --tests '*SyncLiveBidirectionalTest' --tests '*ServerSyncApiLiveTest' --tests '*SyncExtensionReposLiveTest' --tests '*SyncOperationLogTest' --tests '*SyncShelfLiveTest' \
+  ./gradlew :app:testStandardDebugUnitTest --tests '*SyncLiveBidirectionalTest' --tests '*ServerSyncApiLiveTest' --tests '*SyncExtensionReposLiveTest' --tests '*SyncOperationLogTest' --tests '*SyncShelfLiveTest' --tests '*SyncRemovalConfirmationLiveTest' \
   ${GRADLE_ARGS:-} --console=plain

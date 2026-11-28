@@ -108,6 +108,9 @@ object Notifications {
     const val CHANNEL_CRASH_LOGS = "crash_logs_channel"
     const val ID_CRASH_LOGS = -601
 
+    /** The sync found removals it will not do until the user approves them. */
+    const val ID_SYNC_REMOVALS = -801
+
     /**
      * Notification channel used for Incognito Mode
      */

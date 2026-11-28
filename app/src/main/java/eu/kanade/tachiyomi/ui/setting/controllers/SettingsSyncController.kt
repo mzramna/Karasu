@@ -23,6 +23,8 @@ import eu.kanade.tachiyomi.util.system.withUIContext
 import karasu.data.suwayomi.HealthResult
 import karasu.data.suwayomi.ServerOrigin
 import karasu.data.suwayomi.ServerSyncApi
+import eu.kanade.tachiyomi.ui.more.SyncRemovalsDialog
+import karasu.domain.suwayomi.RemovalConfirmation
 import karasu.domain.suwayomi.ServerPreferences
 import karasu.i18n.MR
 import karasu.util.lang.getString
@@ -190,6 +192,28 @@ class SettingsSyncController : SettingsLegacyController() {
                     serverPreferences.onlyOverWifi().set(it as Boolean)
                     ServerSyncJob.setupTask(context.applicationContext)
                     true
+                }
+            }
+            switchPreference {
+                bindTo(serverPreferences.confirmRemovals())
+                titleRes = MR.strings.suwayomi_confirm_removals
+                summaryRes = MR.strings.suwayomi_confirm_removals_summary
+            }
+            preference {
+                // Removals the sync found and is waiting on: reachable here after "Not now" and in the notification.
+                val confirmation = RemovalConfirmation(serverPreferences)
+                fun refresh() {
+                    val pending = confirmation.pending()
+                    isVisible = pending.isNotEmpty()
+                    title = context.getString(MR.strings.suwayomi_removals_pending_row, pending.size)
+                }
+                refresh()
+                serverPreferences.pendingRemovals().changes()
+                    .onEach { refresh() }
+                    .launchIn(viewScope)
+                onClick {
+                    val host = activity ?: return@onClick
+                    SyncRemovalsDialog.show(host, confirmation)
                 }
             }
             preference {

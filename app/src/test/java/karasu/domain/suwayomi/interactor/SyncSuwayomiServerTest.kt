@@ -49,6 +49,10 @@ import karasu.domain.manga.merged.MergedMangaRepository
 import karasu.domain.manga.merged.interactor.MergedSources
 import karasu.domain.suwayomi.ServerPreferences
 import karasu.domain.suwayomi.models.DeletionEntry
+import karasu.domain.suwayomi.models.PlannedRemoval
+import karasu.domain.suwayomi.models.RemovalKind
+import karasu.domain.suwayomi.models.RemovalSide
+import karasu.domain.suwayomi.models.OperationsPage
 import karasu.domain.suwayomi.models.DownloadPolicy
 import karasu.domain.suwayomi.models.MangaLookup
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -576,4 +580,127 @@ class SyncSuwayomiServerTest {
         coVerify(exactly = 0) { deleteExtensionRepo.await(any()) }
         assertEquals(0, summary.reposPulled + summary.reposPushed + summary.reposRemovedLocal + summary.reposRemovedRemote)
     }
+
+    // region removals that wait for the user
+
+    @Test
+    fun `a downloaded chapter the server asked to delete is kept until the user approves it`() = runBlocking {
+        preferences.applyRemoteDeletions().set(true)
+        preferences.lastDeletionId().set(7)
+        val downloaded = chapter(10, "/c1").apply { name = "Chapter 1" }
+        coEvery { api.deletions(7) } returns listOf(DeletionEntry(9, "3", "/m", "/c1"), DeletionEntry(10, "999", "/unknown", "/c"))
+        coEvery { getManga.awaitByUrlAndSource("/m", 3L) } returns manga
+        coEvery { getChapter.awaitAllRaw(1L, false) } returns listOf(downloaded)
+        every { downloadManager.isChapterDownloaded(downloaded, manga, true) } returns true
+
+        val held = sync().await(approvedRemovals = emptySet())
+
+        verify(exactly = 0) { downloadManager.deleteChapters(any(), any(), any(), any()) }
+        val removal = held.heldRemovals.single()
+        assertEquals(RemovalKind.DOWNLOADED_CHAPTER, removal.kind)
+        assertEquals(RemovalSide.THIS_DEVICE, removal.side)
+        assertEquals("delete-here:3|/m|/c1", removal.key)
+        assertTrue(removal.label.contains("Title") && removal.label.contains("Chapter 1"), removal.label)
+        assertEquals(7L, preferences.lastDeletionId().get(), "the cursor stays, so the deletion is found again")
+
+        val done = sync().await(approvedRemovals = setOf("delete-here:3|/m|/c1"))
+
+        verify(exactly = 1) { downloadManager.deleteChapters(listOf(downloaded), manga, any(), true) }
+        assertTrue(done.heldRemovals.isEmpty())
+        assertEquals(1, done.deletionsApplied)
+        assertEquals(10L, preferences.lastDeletionId().get())
+    }
+
+    @Test
+    fun `a link removal is kept until the user approves it, on either side`() = runBlocking {
+        preferences.categoryLinksSnapshot().set("""{"3|/m":["action","drama"]}""")
+        linkSetup(localNames = listOf("Drama"), remoteIds = setOf(4, 5))
+
+        val held = sync().await(approvedRemovals = emptySet())
+
+        coVerify(exactly = 0) { api.updateMangaCategories(any(), any(), any()) }
+        val removal = held.heldRemovals.single()
+        assertEquals(RemovalKind.CATEGORY_LINK, removal.kind)
+        assertEquals(RemovalSide.SERVER, removal.side)
+        assertEquals("link-server:3|/m|action", removal.key)
+        assertTrue(preferences.categoryLinksSnapshot().get().contains("action"), "what was agreed stays")
+
+        sync().await(approvedRemovals = setOf("link-server:3|/m|action"))
+
+        coVerify(exactly = 1) { api.updateMangaCategories(100, emptyList(), listOf(4)) }
+    }
+
+    @Test
+    fun `a work taken out of the library stays on the server until the user approves it`() = runBlocking {
+        preferences.syncProgress().set(true)
+        preferences.librarySnapshot().set("[\"3|/m\",\"3|/gone\"]")
+        coEvery { api.lookupManga(3L, "/gone") } returns MangaLookup(mangaId = 44L)
+        serverLibrary()
+
+        val held = sync().await(approvedRemovals = emptySet())
+
+        coVerify(exactly = 0) { api.removeFromLibrary(any()) }
+        assertEquals("library-server:3|/gone", held.heldRemovals.single().key)
+        assertTrue(preferences.librarySnapshot().get().contains("/gone"), "kept in the snapshot, or it would never be found again")
+
+        sync().await(approvedRemovals = setOf("library-server:3|/gone"))
+
+        coVerify(exactly = 1) { api.removeFromLibrary(44L) }
+    }
+
+    @Test
+    fun `a repository removal is kept until the user approves it, in both directions`() = runBlocking {
+        preferences.applyRemoteDeletions().set(true)
+        preferences.pushLocalDeletions().set(true)
+        // removed here: the server still has it
+        repos(local = emptyList(), remote = listOf("https://a/repo/repo.json"), snapshot = """["https://a/repo"]""")
+
+        val sending = sync().await(approvedRemovals = emptySet())
+
+        coVerify(exactly = 0) { api.removeExtensionStore(any()) }
+        assertEquals("repo-server:https://a/repo", sending.heldRemovals.single().key)
+        assertEquals("""["https://a/repo"]""", preferences.extensionRepoSnapshot().get(), "still agreed on, so it is found again")
+
+        // removed on the server: this device still has it
+        repos(local = listOf("https://b/repo"), remote = emptyList(), snapshot = """["https://b/repo"]""")
+
+        val receiving = sync().await(approvedRemovals = emptySet())
+
+        coVerify(exactly = 0) { deleteExtensionRepo.await(any()) }
+        assertEquals("repo-here:https://b/repo", receiving.heldRemovals.single().key)
+
+        sync().await(approvedRemovals = setOf("repo-here:https://b/repo"))
+        coVerify(exactly = 1) { deleteExtensionRepo.await("https://b/repo") }
+    }
+
+    @Test
+    fun `a sync that holds a removal does not move the log cursor or acknowledge`() = runBlocking {
+        preferences.pushLocalDeletions().set(true)
+        preferences.lastOperationSeq().set(5)
+        coEvery { api.operations(any(), any(), any()) } returns OperationsPage(lastSeq = 9, serverTime = 1, minSeq = 1)
+        repos(local = emptyList(), remote = listOf("https://a/repo/repo.json"), snapshot = """["https://a/repo"]""")
+
+        sync().await(approvedRemovals = emptySet())
+
+        assertEquals(5L, preferences.lastOperationSeq().get(), "read again next time")
+        assertEquals(0L, preferences.operationAckSeq().get(), "and not said to be applied")
+
+        sync().await(approvedRemovals = setOf("repo-server:https://a/repo"))
+
+        assertEquals(9L, preferences.lastOperationSeq().get())
+    }
+
+    @Test
+    fun `without an approval set nothing is held and the sync removes as it always did`() = runBlocking {
+        preferences.pushLocalDeletions().set(true)
+        repos(local = emptyList(), remote = listOf("https://a/repo/repo.json"), snapshot = """["https://a/repo"]""")
+
+        val summary = sync().await()
+
+        coVerify(exactly = 1) { api.removeExtensionStore("https://a/repo/repo.json") }
+        assertTrue(summary.heldRemovals.isEmpty())
+    }
+
+    // endregion
 }
+

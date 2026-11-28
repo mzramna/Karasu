@@ -464,13 +464,23 @@ class LiveDevice(
 
     // --- the sync itself, as the background job runs it
 
-    fun sync(): SyncSuwayomiServer.Summary = runBlocking {
+    /** What the background job does: the removals approved so far (or all of them when the question is off), then the bookkeeping. */
+    fun syncLikeTheJob(): SyncSuwayomiServer.Summary = runBlocking {
+        val confirmation = karasu.domain.suwayomi.RemovalConfirmation(preferences)
+        val summary = syncWith(confirmation.approvedForNextRun())
+        confirmation.recordRun(summary)
+        summary
+    }
+
+    fun sync(approved: Set<String>? = null): SyncSuwayomiServer.Summary = syncWith(approved)
+
+    private fun syncWith(approved: Set<String>?): SyncSuwayomiServer.Summary = runBlocking {
         SyncSuwayomiServer(
             api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
             setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
             updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
             insertManga, insertChapter, updateManga, mockk(relaxed = true),
             extensionManager, mockk(relaxed = true),
-        ).await()
+        ).await(approved)
     }
 }

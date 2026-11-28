@@ -95,6 +95,7 @@ import eu.kanade.tachiyomi.ui.migration.manga.process.MigrationListController
 import eu.kanade.tachiyomi.ui.migration.manga.process.MigrationProcedureConfig
 import eu.kanade.tachiyomi.ui.more.AboutController
 import eu.kanade.tachiyomi.ui.more.OverflowDialog
+import eu.kanade.tachiyomi.ui.more.SyncRemovalsDialog
 import eu.kanade.tachiyomi.ui.more.stats.StatsController
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
 import eu.kanade.tachiyomi.ui.recents.RecentsController
@@ -150,6 +151,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import karasu.domain.suwayomi.RemovalConfirmation
+import karasu.domain.suwayomi.ServerPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
@@ -266,6 +269,25 @@ open class MainActivity : BaseActivity<MainActivityBinding>() {
             toolbarHeight + if (includeTabs) 48.dpToPx else 0
         } else {
             binding.appBar.getEstimatedLayout(includeSearchToolbar, includeTabs, includeLargeToolbar)
+        }
+    }
+
+    private var syncRemovalsDialog: androidx.appcompat.app.AlertDialog? = null
+
+    /**
+     * Shows the question about the removals a sync found, whenever there is a list nobody has answered and the app is on
+     * screen: right after a manual sync, or when the app is opened from the notification.
+     */
+    private fun askAboutSyncRemovals() {
+        val serverPreferences = Injekt.get<ServerPreferences>()
+        val confirmation = RemovalConfirmation(serverPreferences)
+        lifecycleScope.launchUI {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                serverPreferences.pendingRemovals().changes().collect {
+                    if (syncRemovalsDialog?.isShowing == true || !confirmation.needsAnswer()) return@collect
+                    syncRemovalsDialog = SyncRemovalsDialog.show(this@MainActivity, confirmation)
+                }
+            }
         }
     }
 
@@ -730,6 +752,7 @@ open class MainActivity : BaseActivity<MainActivityBinding>() {
             .changesIn(lifecycleScope) {
                 setExtensionsBadge()
             }
+        askAboutSyncRemovals()
         preferences.incognitoMode()
             .changesIn(lifecycleScope) {
                 binding.toolbar.setIncognitoMode(it)
