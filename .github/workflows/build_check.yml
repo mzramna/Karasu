@@ -54,7 +54,16 @@ jobs:
       - name: Build the app
         run: ./gradlew assembleStandardRelease
 
+      # Robolectric downloads the simulated Android jar when a test starts; Maven Central answers 429 to the runners.
+      - name: Cache Robolectric's Android jar
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-android-all-${{ hashFiles('gradle/libs.versions.toml') }}
+
       - name: Run unit tests
+        env:
+          ROBOLECTRIC_REPO_URL: https://maven-central.storage-download.googleapis.com/maven2
         run: ./gradlew testReleaseUnitTest testStandardReleaseUnitTest
 
       - name: Publish test report
