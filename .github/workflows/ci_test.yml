@@ -49,7 +49,17 @@ jobs:
           mkdir -p ~/.gradle
           cp .github/runner-files/ci-gradle.properties ~/.gradle/gradle.properties
 
+      # Robolectric downloads the simulated Android jar when a test starts. Maven Central answers 429 to the runners, so the
+      # jar comes from Google's public mirror of Central and is cached between runs.
+      - name: Cache Robolectric's Android jar
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-android-all-${{ hashFiles('gradle/libs.versions.toml') }}
+
       - name: Run unit tests
+        env:
+          ROBOLECTRIC_REPO_URL: https://maven-central.storage-download.googleapis.com/maven2
         run: ./gradlew testStandardDebugUnitTest --stacktrace
 
       - name: Publish test report
