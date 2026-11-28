@@ -30,7 +30,7 @@ class SyncOperationLogTest {
 
     private fun repo(): String = Live.repos.publish("log-${System.nanoTime()}-${repoDirs.size}").also { repoDirs += it }
 
-    private fun later() = Thread.sleep(60)
+    private fun later() = Thread.sleep(250)
 
     @AfterEach
     fun stop() = servers.forEach { it.stop() }

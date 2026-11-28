@@ -36,7 +36,7 @@ class SyncExtensionReposLiveTest {
     private fun serverRemove(base: String) = runBlocking { web.removeExtensionStore(index(base)) }
 
     /** A moment later, so what comes next is newer than what came before on any clock. */
-    private fun later() = Thread.sleep(60)
+    private fun later() = Thread.sleep(250)
 
     private fun device(label: String) = LiveDevice(label).also { it.sync() }
 
