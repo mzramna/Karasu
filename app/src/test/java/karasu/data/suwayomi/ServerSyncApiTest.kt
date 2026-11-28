@@ -237,6 +237,34 @@ class ServerSyncApiTest {
     }
 
     @Test
+    fun `installed extensions are asked with a condition and named ones with a filter`() = runBlocking {
+        FakeServer {
+            reply("""{"data":{"extensions":{"nodes":[{"pkgName":"eu.a","isInstalled":true},{"pkgName":"eu.b","isInstalled":false}]}}}""")
+        }.use { server ->
+            val api = api(server)
+
+            assertEquals(setOf("eu.a"), api.installedExtensions())
+            assertEquals(listOf("eu.a", "eu.b"), api.extensionsNamed(listOf("eu.a", "eu.b")).map { it.pkgName })
+            assertEquals(emptyList<Any>(), api.extensionsNamed(emptyList()), "nothing to ask, nothing sent")
+
+            assertEquals(2, server.requests.size)
+            assertTrue(server.requests[0].body.contains("isInstalled: true"))
+            assertTrue(server.requests[1].body.contains(""""pkgNames":["eu.a","eu.b"]"""))
+        }
+    }
+
+    @Test
+    fun `an extension is installed on the server by its package name`() = runBlocking {
+        FakeServer { reply("""{"data":{"updateExtension":{"extension":{"pkgName":"eu.a"}}}}""") }.use { server ->
+            api(server).installExtension("eu.a")
+
+            assertTrue(server.requests[0].body.contains("updateExtension"))
+            assertTrue(server.requests[0].body.contains("install: true"))
+            assertTrue(server.requests[0].body.contains(""""id":"eu.a""""))
+        }
+    }
+
+    @Test
     fun `extension stores are listed, added and removed through graphql`() = runBlocking {
         FakeServer { reply("""{"data":{"extensionStores":{"nodes":[{"indexUrl":"https://a/repo.json"}]}}}""") }.use { server ->
             val api = api(server)

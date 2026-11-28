@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -394,8 +395,20 @@ class ServerSyncApi(
         graphql(ServerGraphQl.REMOVE_EXTENSION_STORE, buildJsonObject { put("indexUrl", indexUrl) })
     }
 
-    internal suspend fun extensions(): List<RemoteExtension> =
-        json.decodeFromJsonElement<ExtensionsData>(graphql(ServerGraphQl.EXTENSIONS)).extensions.nodes
+    /** The package names of the extensions the server has installed. */
+    internal suspend fun installedExtensions(): Set<String> =
+        json.decodeFromJsonElement<ExtensionsData>(graphql(ServerGraphQl.INSTALLED_EXTENSIONS)).extensions.nodes
+            .filter { it.isInstalled }.mapTo(mutableSetOf()) { it.pkgName }
+
+    /** What the server knows about just these extensions (an extension its repositories do not offer is absent). */
+    internal suspend fun extensionsNamed(pkgNames: Collection<String>): List<RemoteExtension> =
+        if (pkgNames.isEmpty()) {
+            emptyList()
+        } else {
+            json.decodeFromJsonElement<ExtensionsData>(
+                graphql(ServerGraphQl.EXTENSIONS_BY_PKG, buildJsonObject { put("pkgNames", JsonArray(pkgNames.map { JsonPrimitive(it) })) }),
+            ).extensions.nodes
+        }
 
     suspend fun installExtension(pkgName: String) {
         graphql(ServerGraphQl.INSTALL_EXTENSION, buildJsonObject { put("id", pkgName) })

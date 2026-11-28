@@ -584,24 +584,40 @@ class SyncSuwayomiServer(
 
     /**
      * Installed extensions are the union of both sides; uninstalls are not carried over. The server installs what the app
-     * has, and the app installs what the server has. An extension the server installed is trusted here once the app loads it.
+     * has, and the app installs what the server has. An extension the server installed is trusted here once the app loads
+     * it, which is on the sync after the install.
+     *
+     * Only what is needed is asked of the server: the short list of what it has installed, and then just the extensions
+     * this device has installed that are not on that list. One extension that cannot be installed (not in the server's
+     * repositories, a failed download) is reported and the others still go.
      */
     private suspend fun syncExtensions() {
-        val remote = api.extensions()
-        val remoteInstalled = remote.filter { it.isInstalled }.map { it.pkgName }.toSet()
-        val onServer = remote.map { it.pkgName }.toSet()
+        val remoteInstalled = api.installedExtensions()
         val localInstalled = extensionManager.installedExtensionsFlow.value.map { it.pkgName }.toSet()
 
-        for (pkgName in localInstalled - remoteInstalled) {
-            if (pkgName in onServer) api.installExtension(pkgName)
+        val toPush = localInstalled - remoteInstalled
+        val offeredByServer = if (toPush.isEmpty()) emptySet() else api.extensionsNamed(toPush).mapTo(mutableSetOf()) { it.pkgName }
+        val failed = mutableListOf<String>()
+        for (pkgName in toPush.filter { it in offeredByServer }) {
+            try {
+                api.installExtension(pkgName)
+            } catch (e: ServerApiException) {
+                Logger.w(e) { "Suwayomi sync: the server could not install $pkgName" }
+                failed += pkgName
+            }
         }
+        if (failed.isNotEmpty()) summary = summary.copy(errors = summary.errors + "extensions: the server could not install ${failed.joinToString()}")
 
         val missingHere = remoteInstalled - localInstalled
         if (missingHere.isNotEmpty()) {
-            if (extensionManager.availableExtensionsFlow.value.isEmpty()) extensionManager.findAvailableExtensions()
-            val infos = extensionManager.availableExtensionsFlow.value
+            fun installable() = extensionManager.availableExtensionsFlow.value
                 .filter { it.pkgName in missingHere && extensionManager.getInstallInfo(it.pkgName) == null }
-                .map { ExtensionManager.ExtensionInfo(it) }
+            // The list of what the repositories offer is old when a repository arrived in this very sync: look again once.
+            val wanted = missingHere.filter { extensionManager.getInstallInfo(it) == null }
+            if (wanted.any { pkg -> extensionManager.availableExtensionsFlow.value.none { it.pkgName == pkg } }) {
+                extensionManager.findAvailableExtensions()
+            }
+            val infos = installable().map { ExtensionManager.ExtensionInfo(it) }
             if (infos.isNotEmpty()) ExtensionInstallerJob.startJob(app, infos)
         }
 
@@ -612,9 +628,19 @@ class SyncSuwayomiServer(
 
     // region extension repositories
 
-    private fun normalizeRepoUrl(url: String) = url.trim().trimEnd('/')
-        .removeSuffix("/index.min.json").removeSuffix("/index.json").removeSuffix("/index.pb").removeSuffix("/repo.json")
-        .trimEnd('/')
+    /**
+     * The same repository whatever way it is spelled: with or without the index file name, and GitHub's two addresses for a
+     * file (`github.com/owner/repo/raw/ref/path` is `raw.githubusercontent.com/owner/repo/ref/path`; the server often keeps
+     * the first and the app the second).
+     */
+    private fun normalizeRepoUrl(url: String): String {
+        val trimmed = url.trim().trimEnd('/')
+            .removeSuffix("/index.min.json").removeSuffix("/index.json").removeSuffix("/index.pb").removeSuffix("/repo.json")
+            .trimEnd('/')
+        val github = GITHUB_RAW.matchEntire(trimmed) ?: return trimmed
+        val (owner, repo, ref, path) = github.destructured
+        return "https://raw.githubusercontent.com/$owner/$repo/$ref${if (path.isEmpty()) "" else "/$path"}"
+    }
 
     /**
      * The server's own log of a repository, whatever way it spells the address: its newest operation, if the log has
@@ -1239,5 +1265,8 @@ class SyncSuwayomiServer(
         const val MILLIS = 1000L
 
         const val OPERATIONS_PAGE = 1000
+
+        /** `https://github.com/{owner}/{repo}/raw/{ref}/{path}`, GitHub's second address for a raw file. */
+        val GITHUB_RAW = Regex("""^https://github\.com/([^/]+)/([^/]+)/raw/([^/]+)(?:/(.*))?$""")
     }
 }

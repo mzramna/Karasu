@@ -4,14 +4,19 @@ import eu.kanade.tachiyomi.data.database.models.Category
 import eu.kanade.tachiyomi.data.database.models.Chapter
 import android.app.Application
 import eu.kanade.tachiyomi.data.database.models.create
+import eu.kanade.tachiyomi.extension.ExtensionInstallerJob
 import eu.kanade.tachiyomi.extension.ExtensionManager
 import eu.kanade.tachiyomi.extension.model.Extension
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.domain.manga.models.Manga
 import eu.kanade.tachiyomi.source.SourceManager
+import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
+import io.mockk.just
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
@@ -113,7 +118,8 @@ class SyncSuwayomiServerTest {
         preferences.syncHistory().set(false)
         preferences.pushLocalDeletions().set(false)
         coEvery { getManga.awaitFavorites() } returns listOf(manga)
-        coEvery { api.extensions() } returns emptyList()
+        coEvery { api.installedExtensions() } returns emptySet()
+        coEvery { api.extensionsNamed(any()) } returns emptyList()
         every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(emptyList())
         every { extensionManager.availableExtensionsFlow } returns MutableStateFlow(emptyList())
         every { extensionManager.untrustedExtensionsFlow } returns MutableStateFlow(emptyList())
@@ -122,7 +128,7 @@ class SyncSuwayomiServerTest {
     @Test
     fun `an extension installed in the app is installed on the server`() = runBlocking {
         val mango = "eu.kanade.tachiyomi.extension.all.mango"
-        coEvery { api.extensions() } returns listOf(RemoteExtension(mango, isInstalled = false))
+        coEvery { api.extensionsNamed(any()) } returns listOf(RemoteExtension(mango, isInstalled = false))
         val installed = mockk<Extension.Installed>(relaxed = true)
         every { installed.pkgName } returns mango
         every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(listOf(installed))
@@ -135,7 +141,7 @@ class SyncSuwayomiServerTest {
     @Test
     fun `an extension the server installed is trusted once the app has loaded it`() = runBlocking {
         val mango = "eu.kanade.tachiyomi.extension.all.mango"
-        coEvery { api.extensions() } returns listOf(RemoteExtension(mango, isInstalled = true))
+        coEvery { api.installedExtensions() } returns setOf(mango)
         val untrusted = mockk<Extension.Untrusted>(relaxed = true)
         every { untrusted.pkgName } returns mango
         every { untrusted.versionCode } returns 7L
@@ -385,6 +391,89 @@ class SyncSuwayomiServerTest {
         coVerify(exactly = 0) { upsertHistory.await(any<Long>(), any(), any()) }
     }
 
+    private fun installedHere(pkg: String) = mockk<Extension.Installed>(relaxed = true) { every { pkgName } returns pkg }
+
+    private fun availableHere(pkg: String) = mockk<Extension.Available>(relaxed = true) {
+        every { pkgName } returns pkg
+        every { apkName } returns "$pkg.apk"
+        every { name } returns pkg
+        every { versionCode } returns 1L
+        every { libVersion } returns 1.5
+    }
+
+    @Test
+    fun `nothing is asked of the server about extensions this device lacks nothing for`() = runBlocking {
+        coEvery { api.installedExtensions() } returns setOf("eu.same")
+        every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(listOf(installedHere("eu.same")))
+
+        sync().await()
+
+        coVerify(exactly = 1) { api.installedExtensions() }
+        coVerify(exactly = 0) { api.extensionsNamed(any()) }
+        coVerify(exactly = 0) { api.installExtension(any()) }
+    }
+
+    @Test
+    fun `an extension the server's repositories do not offer is not pushed`() = runBlocking {
+        every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(listOf(installedHere("eu.private.build")))
+        coEvery { api.extensionsNamed(setOf("eu.private.build")) } returns emptyList()
+
+        val summary = sync().await()
+
+        coVerify(exactly = 0) { api.installExtension(any()) }
+        assertTrue(summary.errors.isEmpty(), "it is not an error: ${summary.errors}")
+    }
+
+    @Test
+    fun `an extension the server cannot install is reported and the others still go`() = runBlocking {
+        every { extensionManager.installedExtensionsFlow } returns MutableStateFlow(listOf(installedHere("eu.bad"), installedHere("eu.good")))
+        coEvery { api.extensionsNamed(any()) } returns listOf(RemoteExtension("eu.bad", false), RemoteExtension("eu.good", false))
+        coEvery { api.installExtension("eu.bad") } throws ServerApiException(500, "download failed")
+
+        val summary = sync().await()
+
+        coVerify(exactly = 1) { api.installExtension("eu.good") }
+        assertTrue(summary.errors.single().contains("eu.bad"), "reported: ${summary.errors}")
+    }
+
+    @Test
+    fun `the list of available extensions is read again when the one wanted is not in it`() = runBlocking {
+        coEvery { api.installedExtensions() } returns setOf("eu.new.repo.ext")
+        val flow = MutableStateFlow(listOf(availableHere("eu.old.repo.ext"))) // the list from before a repository arrived
+        every { extensionManager.availableExtensionsFlow } returns flow
+        every { extensionManager.getInstallInfo(any()) } returns null
+        coEvery { extensionManager.findAvailableExtensions() } coAnswers { flow.value = listOf(availableHere("eu.old.repo.ext"), availableHere("eu.new.repo.ext")) }
+        mockkObject(ExtensionInstallerJob.Companion)
+        try {
+            every { ExtensionInstallerJob.startJob(any(), any(), any()) } just Runs
+
+            sync().await()
+
+            coVerify(exactly = 1) { extensionManager.findAvailableExtensions() }
+            verify(exactly = 1) { ExtensionInstallerJob.startJob(app, match { infos -> infos.single().pkgName == "eu.new.repo.ext" }, any()) }
+        } finally {
+            unmockkObject(ExtensionInstallerJob.Companion)
+        }
+    }
+
+    @Test
+    fun `the available extensions are not read again when the one wanted is already in the list`() = runBlocking {
+        coEvery { api.installedExtensions() } returns setOf("eu.have")
+        every { extensionManager.availableExtensionsFlow } returns MutableStateFlow(listOf(availableHere("eu.have")))
+        every { extensionManager.getInstallInfo(any()) } returns null
+        mockkObject(ExtensionInstallerJob.Companion)
+        try {
+            every { ExtensionInstallerJob.startJob(any(), any(), any()) } just Runs
+
+            sync().await()
+
+            coVerify(exactly = 0) { extensionManager.findAvailableExtensions() }
+            verify(exactly = 1) { ExtensionInstallerJob.startJob(any(), any(), any()) }
+        } finally {
+            unmockkObject(ExtensionInstallerJob.Companion)
+        }
+    }
+
     // region extension repositories
 
     private fun repo(baseUrl: String) = ExtensionRepo(baseUrl, "name", null, "https://site", "fingerprint")
@@ -469,4 +558,22 @@ class SyncSuwayomiServerTest {
     }
 
     // endregion
+
+    @Test
+    fun `github's two addresses for a raw file are the same repository`() = runBlocking {
+        preferences.applyRemoteDeletions().set(true)
+        preferences.pushLocalDeletions().set(true)
+        repos(
+            local = listOf("https://raw.githubusercontent.com/keiyoushi/extensions/repo"),
+            remote = listOf("https://github.com/keiyoushi/extensions/raw/repo/index.pb"),
+        )
+
+        val summary = sync().await()
+
+        coVerify(exactly = 0) { api.addExtensionStore(any()) }
+        coVerify(exactly = 0) { createExtensionRepo.await(any()) }
+        coVerify(exactly = 0) { api.removeExtensionStore(any()) }
+        coVerify(exactly = 0) { deleteExtensionRepo.await(any()) }
+        assertEquals(0, summary.reposPulled + summary.reposPushed + summary.reposRemovedLocal + summary.reposRemovedRemote)
+    }
 }

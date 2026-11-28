@@ -35,12 +35,21 @@ internal object ServerGraphQl {
         }
     """
 
-    const val EXTENSIONS = """
-        query KarasuExtensions {
-          extensions { nodes { pkgName isInstalled } }
+    /** The extensions the server has installed: a short list, not the ~1700 the repositories offer. */
+    const val INSTALLED_EXTENSIONS = """
+        query KarasuInstalledExtensions {
+          extensions(condition: {isInstalled: true}) { nodes { pkgName isInstalled } }
         }
     """
 
+    /** Only the extensions with these package names, with whether the server has each one installed. */
+    const val EXTENSIONS_BY_PKG = """
+        query KarasuExtensionsByPkg(${'$'}pkgNames: [String!]) {
+          extensions(filter: {pkgName: {in: ${'$'}pkgNames}}) { nodes { pkgName isInstalled } }
+        }
+    """
+
+    /** The server's id for an extension is its package name (`ExtensionMutation.updateExtensions` selects by `pkgName`). */
     const val INSTALL_EXTENSION = """
         mutation KarasuInstallExtension(${'$'}id: String!) {
           updateExtension(input: {id: ${'$'}id, patch: {install: true}}) {

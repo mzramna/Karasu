@@ -678,6 +678,14 @@ class MockSuwayomiServer(
         val data = when {
             "KarasuLibrary" in query -> library(variables)
             "KarasuCategories" in query -> buildJsonObject { putJsonObject("categories") { put("nodes", categoryNodes()) } }
+            "KarasuInstalledExtensions" in query -> buildJsonObject {
+                putJsonObject("extensions") { put("nodes", extensionNodes(extensionsOnServer.filterValues { it })) }
+            }
+            "KarasuExtensionsByPkg" in query -> buildJsonObject {
+                val wanted = variables["pkgNames"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty().toSet()
+                putJsonObject("extensions") { put("nodes", extensionNodes(extensionsOnServer.filterKeys { it in wanted })) }
+            }
+            "KarasuInstallExtension" in query -> installExtensionOnServer(variables["id"]!!.jsonPrimitive.content)
             "KarasuExtensionStores" in query -> buildJsonObject {
                 putJsonObject("extensionStores") { put("nodes", JsonArray(extensionStoreUrls.map { buildJsonObject { put("indexUrl", it) } })) }
             }
@@ -692,6 +700,17 @@ class MockSuwayomiServer(
             else -> return reply(200, buildJsonObject { put("errors", buildJsonArray { add(buildJsonObject { put("message", "mock: unknown operation") }) }) })
         }
         return reply(200, buildJsonObject { put("data", data) })
+    }
+
+    /** The extensions the server knows (pkgName to installed); a mock downloads nothing, it only records the install. */
+    private val extensionsOnServer = linkedMapOf<String, Boolean>()
+
+    private fun extensionNodes(extensions: Map<String, Boolean>) =
+        JsonArray(extensions.map { (pkg, installed) -> buildJsonObject { put("pkgName", pkg); put("isInstalled", installed) } })
+
+    private fun installExtensionOnServer(pkg: String): JsonObject {
+        if (extensionsOnServer.containsKey(pkg)) extensionsOnServer[pkg] = true
+        return buildJsonObject { putJsonObject("updateExtension") { putJsonObject("extension") { put("pkgName", pkg) } } }
     }
 
     private fun graphqlError(message: String) =

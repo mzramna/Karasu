@@ -207,6 +207,12 @@ class LiveDevice(
 
     // --- real interactors (the ones that write, so they record)
     private val updateChapter = UpdateChapter(chapterRepository, operations)
+
+    // What the sync writes when it brings in a work the server has and this device lacks: the real interactors over
+    // the same in-memory state, so a work that was imported stays on the device (and in the next sync's snapshot).
+    private val insertManga = karasu.domain.manga.interactor.InsertManga(mangaRepository)
+    private val insertChapter = karasu.domain.chapter.interactor.InsertChapter(chapterRepository)
+    private val updateManga = karasu.domain.manga.interactor.UpdateManga(mangaRepository)
     private val upsertHistory = UpsertHistory(historyRepository, operations)
     private val insertCategories = InsertCategories(categoryRepository, operations)
     private val updateCategories = UpdateCategories(categoryRepository, operations)
@@ -215,6 +221,13 @@ class LiveDevice(
     private val mergedSources = MergedSources(mergedRepository, operations)
     private val getExtensionRepo = GetExtensionRepo(repoRepository)
     private val deleteExtensionRepo = DeleteExtensionRepo(repoRepository, operations)
+
+    // extensions: the live scenarios do not install anything on a phone, so this device has none
+    private val extensionManager = mockk<eu.kanade.tachiyomi.extension.ExtensionManager>(relaxed = true) {
+        every { installedExtensionsFlow } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+        every { availableExtensionsFlow } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+        every { untrustedExtensionsFlow } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+    }
 
     /**
      * Adding a repository fetches its index over https from the internet; here it is fetched from [Live.repos]
@@ -268,6 +281,25 @@ class LiveDevice(
             val id = firstArg<Long>()
             categories.removeAll { it.id?.toLong() == id }
             links.values.forEach { it.remove(id) }
+        }
+        coEvery { mangaRepository.insert(any()) } answers {
+            val manga = firstArg<Manga>()
+            manga.id = nextId++
+            mangas += manga
+            manga.id
+        }
+        coEvery { mangaRepository.update(any()) } answers {
+            val update = firstArg<karasu.domain.manga.models.MangaUpdate>()
+            mangas.firstOrNull { it.id == update.id }?.let { manga -> update.favorite?.let { manga.favorite = it } }
+            true
+        }
+        coEvery { chapterRepository.insertBulk(any()) } answers {
+            val inserted = firstArg<List<Chapter>>()
+            inserted.forEach { chapter ->
+                chapter.id = nextId++
+                chapters.getOrPut(chapter.manga_id!!) { mutableListOf() } += chapter
+            }
+            inserted
         }
         coEvery { mangaRepository.setCategories(any(), any()) } answers {
             links[firstArg<Long>()] = secondArg<List<Long>>().toMutableSet()
@@ -437,8 +469,8 @@ class LiveDevice(
             api, preferences, getManga, getChapter, updateChapter, getCategories, insertCategories,
             setMangaCategories, mergedSources, mergedRepository, downloadManager, sourceManager, getHistory, upsertHistory,
             updateCategories, operations, getExtensionRepo, createExtensionRepo, deleteExtensionRepo,
-            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
-            mockk(relaxed = true), mockk(relaxed = true),
+            insertManga, insertChapter, updateManga, mockk(relaxed = true),
+            extensionManager, mockk(relaxed = true),
         ).await()
     }
 }

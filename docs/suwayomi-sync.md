@@ -176,7 +176,9 @@ as regras anteriores.
 
 O app e o servidor mantêm a **união** dos repositórios de extensões (GraphQL `extensionStores`, `addExtensionStore`,
 `removeExtensionStore`). As URLs são comparadas normalizadas (sem `index.min.json`, `index.json`, `index.pb`, `repo.json`
-nem barra final), então `.../index.min.json` no app e `.../repo.json` no servidor são o mesmo repositório. Um repositório
+nem barra final, e os dois endereços do GitHub para um arquivo: `github.com/dono/repo/raw/ref/caminho` é o mesmo que
+`raw.githubusercontent.com/dono/repo/ref/caminho`, e o servidor costuma guardar o primeiro e o app o segundo), então
+`.../index.min.json` no app e `.../repo.json` no servidor são o mesmo repositório. Um repositório
 novo de um lado é criado no outro; se o app não consegue ler o repositório do servidor (ex.: só v2), registra um aviso e
 tenta de novo na próxima vez. A **remoção** só propaga quando o último estado combinado (`suwayomi_extension_repo_snapshot`)
 prova que estava nos dois lados (a primeira execução nunca remove) e segue as opções já existentes: removido no app só
@@ -188,6 +190,21 @@ Testes: `SyncExtensionReposLiveTest` (12 cenários nos dois sentidos: adicionar,
 depois da remoção, dois aparelhos, repositório que o servidor não consegue ler). Roda no mock a cada build e contra o
 servidor real (H2 e PostgreSQL) em `scripts/live-sync-test.sh`; os repositórios dos testes vêm de um `RepoHost` local, que o
 servidor consulta na mesma máquina.
+
+## Extensões instaladas
+
+As extensões instaladas são a **união** dos dois lados; desinstalar nunca se propaga. O que o app tem e o servidor não é
+instalado no servidor (se os repositórios do servidor a oferecem); o que o servidor tem e o app não é instalado no app pelo
+instalador do próprio app (o Android ainda pede a confirmação de cada instalação). Uma extensão que o servidor instalou é
+**confiada** no app quando o app a carrega, o que só acontece na sincronização seguinte à instalação.
+
+Só se pergunta ao servidor o necessário: a lista curta do que ele tem instalado (`extensions(condition: {isInstalled: true})`)
+e, só para o que o app tem e o servidor não, quais o servidor conhece (`extensions(filter: {pkgName: {in: [...]}})`), em vez
+das ~1700 que os repositórios oferecem. O identificador da extensão no servidor é o `pkgName` (`updateExtension(input: {id})`).
+Uma extensão que o servidor não consegue instalar (fora dos seus repositórios, download que falha) é anotada nos erros e as
+demais seguem. Se a extensão desejada não está na lista de disponíveis do app (por exemplo, o repositório dela chegou nesta
+mesma sincronização), a lista é lida de novo uma vez. Nada de extensões roda nos cenários ao vivo: o aparelho de teste não
+instala nada; o caminho é coberto pelos testes de `SyncSuwayomiServerTest` e `ServerSyncApiTest`.
 
 ## Renomear categoria
 

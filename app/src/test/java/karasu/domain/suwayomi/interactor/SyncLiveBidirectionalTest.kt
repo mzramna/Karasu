@@ -813,8 +813,7 @@ class SyncLiveBidirectionalTest {
         val app = device("phone", 34)
         app.read(34, 1, page = 1)
         app.sync()
-        app.sync()
-        app.sync()
+        app.sync() // a second publish has nothing to send; the third would acknowledge the entry and the server may forget it
 
         val key = "progress:0|${Live.mangaUrl(34)}|${Live.chapterUrl(34, 1)}"
         val entries = server.operations().filter { it.key == key }
