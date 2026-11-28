@@ -45,6 +45,20 @@ base {
 }
 
 android {
+    testOptions {
+        unitTests {
+            // Robolectric needs the app's resources and manifest on the test classpath.
+            isIncludeAndroidResources = true
+            all {
+                // Robolectric downloads the simulated Android jar when a test starts; a mirror can be given for networks
+                // that do not reach Maven Central (for example ROBOLECTRIC_REPO_URL=https://mirror.example/maven2).
+                System.getenv("ROBOLECTRIC_REPO_URL")?.let { url ->
+                    it.systemProperty("robolectric.dependency.repo.url", url)
+                    it.systemProperty("robolectric.dependency.repo.id", "mirror")
+                }
+            }
+        }
+    }
     defaultConfig {
         applicationId = "eu.kanade.tachiyomi"
         versionCode = 167
@@ -258,6 +272,11 @@ dependencies {
     // JVM SQLite, so the .sq queries can be run against an in-memory schema in unit tests.
     testImplementation(libs.sqldelight.sqlite.driver)
     testRuntimeOnly(libs.bundles.test.runtime)
+    // Robolectric simulates the Android framework on the JVM (JUnit 4 tests, run by the vintage engine next to JUnit 5).
+    testImplementation(libs.robolectric)
+    testImplementation(libs.junit4)
+    testImplementation(libs.conscrypt.jvm)
+    testRuntimeOnly(libs.junit.vintage)
     androidTestImplementation(libs.bundles.test.android)
     testImplementation(kotlinx.coroutines.test)
 

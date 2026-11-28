@@ -217,6 +217,12 @@ Como funciona, de ponta a ponta:
 Testes: `SyncSuwayomiServerTest` (cada tipo retido e depois aprovado, cursor sem avanço), `RemovalConfirmationTest` (a conversa
 com o usuário) e `SyncRemovalConfirmationLiveTest` (6 cenários no mock e no servidor real em H2 e PostgreSQL).
 
+O diálogo em si é testado com o **Robolectric** (`SyncRemovalsDialogTest`), que simula o Android dentro da JVM, sem emulador: abre
+uma `Activity` de verdade, mostra o diálogo com o mesmo código do app, clica nos botões e confere o que foi aprovado e o que
+foi disparado, em inglês e em português. Com `ROBOLECTRIC_SCREENSHOTS=<pasta>` o teste grava a captura de tela do diálogo. O
+Robolectric baixa a imagem simulada do Android (`android-all-instrumented`) na primeira execução; em uma rede que não alcança o
+Maven Central, aponte `ROBOLECTRIC_REPO_URL` para um espelho (`.../maven2`).
+
 ## Extensões instaladas
 
 As extensões instaladas são a **união** dos dois lados; desinstalar nunca se propaga. O que o app tem e o servidor não é

@@ -442,7 +442,7 @@ class SyncSuwayomiServer(
                 if (!isDownloadedLocally(it.sourceId, it.mangaUrl, it.chapterUrl)) return@forEach
                 if (!allowRemoval(
                         RemovalKind.DOWNLOADED_CHAPTER, RemovalSide.THIS_DEVICE, "delete-here:$key",
-                        "${chapterLabel(it.sourceId, it.mangaUrl, it.chapterUrl)}: downloaded copy on this device",
+                        chapterLabel(it.sourceId, it.mangaUrl, it.chapterUrl),
                     )
                 ) {
                     heldHere = true
@@ -533,7 +533,7 @@ class SyncSuwayomiServer(
         val allowed = gone.filter { (source, mangaUrl, chapterUrl) ->
             allowRemoval(
                 RemovalKind.DOWNLOADED_CHAPTER, RemovalSide.SERVER, "delete-others:${chapterKey(SyncMath.mangaKey(source, mangaUrl), chapterUrl)}",
-                "${byKey[SyncMath.mangaKey(source, mangaUrl)]?.safeTitle() ?: mangaUrl} - $chapterUrl: downloaded copy on the server's other devices",
+                chapterLabel(source, mangaUrl, chapterUrl),
             )
         }
         // The picture of what is downloaded moves only when nothing is waiting, or the held deletions are forgotten.
@@ -626,12 +626,12 @@ class SyncSuwayomiServer(
             var blocked = false
             if (outcome.changeRemote) {
                 for (e in remote.filter { it.sourceId !in staying }) {
-                    if (!allowRemoval(RemovalKind.MERGED_SOURCE, RemovalSide.SERVER, "merged-server:$key|${e.sourceId}", "${manga.safeTitle()}: merged source ${e.sourceId} on the server")) blocked = true
+                    if (!allowRemoval(RemovalKind.MERGED_SOURCE, RemovalSide.SERVER, "merged-server:$key|${e.sourceId}", "${manga.safeTitle()}: source ${e.sourceId}")) blocked = true
                 }
             }
             if (outcome.changeLocal) {
                 for (e in local.filter { it.sourceId !in staying }) {
-                    if (!allowRemoval(RemovalKind.MERGED_SOURCE, RemovalSide.THIS_DEVICE, "merged-here:$key|${e.sourceId}", "${manga.safeTitle()}: merged source ${e.sourceId} on this device")) blocked = true
+                    if (!allowRemoval(RemovalKind.MERGED_SOURCE, RemovalSide.THIS_DEVICE, "merged-here:$key|${e.sourceId}", "${manga.safeTitle()}: source ${e.sourceId}")) blocked = true
                 }
             }
             if (blocked) {
@@ -835,7 +835,7 @@ class SyncSuwayomiServer(
         for (base in localByBase.keys - remoteByBase.keys) {
             if (removedOnServerByLog(base)) {
                 // the log says it: someone removed it there after anything this device did with it
-                if (preferences.applyRemoteDeletions().get() && allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.THIS_DEVICE, "repo-here:$base", "Extension repository $base: removed on the server, to be removed on this device")) {
+                if (preferences.applyRemoteDeletions().get() && allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.THIS_DEVICE, "repo-here:$base", base)) {
                     deleteExtensionRepo.await(localByBase.getValue(base))
                     local -= base
                     removedLocal++
@@ -847,7 +847,7 @@ class SyncSuwayomiServer(
             } else if (winner(remoteKey(base), operations.latest(OpEntity.EXTENSION_REPO, name = base)) == Side.LOCAL) {
                 addRemote(base) // removed on the server, but this device re-added it later
             } else if (preferences.applyRemoteDeletions().get() &&
-                allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.THIS_DEVICE, "repo-here:$base", "Extension repository $base: removed on the server, to be removed on this device")
+                allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.THIS_DEVICE, "repo-here:$base", base)
             ) {
                 deleteExtensionRepo.await(localByBase.getValue(base))
                 local -= base
@@ -858,7 +858,7 @@ class SyncSuwayomiServer(
             val indexUrl = remoteByBase.getValue(base)
             if (removedHereByLog(base, indexUrl)) {
                 // the log says it: this device removed it after anything the server did with it
-                if (preferences.pushLocalDeletions().get() && allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.SERVER, "repo-server:$base", "Extension repository $base: removed here, to be removed on the server")) {
+                if (preferences.pushLocalDeletions().get() && allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.SERVER, "repo-server:$base", base)) {
                     api.removeExtensionStore(indexUrl)
                     remote -= base
                     removedRemote++
@@ -868,7 +868,7 @@ class SyncSuwayomiServer(
             } else if (winner("repo:$indexUrl", operations.latest(OpEntity.EXTENSION_REPO, name = base)) == Side.REMOTE) {
                 addLocal(base, indexUrl) // removed here, but the server re-added it later
             } else if (preferences.pushLocalDeletions().get() &&
-                allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.SERVER, "repo-server:$base", "Extension repository $base: removed here, to be removed on the server")
+                allowRemoval(RemovalKind.EXTENSION_REPO, RemovalSide.SERVER, "repo-server:$base", base)
             ) {
                 api.removeExtensionStore(indexUrl)
                 remote -= base
@@ -910,7 +910,7 @@ class SyncSuwayomiServer(
                 if (key in local) continue
                 val sourceId = key.substringBefore('|').toLongOrNull() ?: continue
                 val onServer = api.lookupManga(sourceId, key.substringAfter('|')) ?: continue
-                if (allowRemoval(RemovalKind.LIBRARY_WORK, RemovalSide.SERVER, "library-server:$key", "${key.substringAfter('|')}: out of the library on the server")) {
+                if (allowRemoval(RemovalKind.LIBRARY_WORK, RemovalSide.SERVER, "library-server:$key", key.substringAfter('|'))) {
                     api.removeFromLibrary(onServer.mangaId)
                 } else {
                     heldWorks += key
@@ -1194,10 +1194,10 @@ class SyncSuwayomiServer(
         // Taking a work out of a category, on either side, is a removal; adding one is not.
         var blocked = false
         for (category in localKeys - merged) {
-            if (!allowRemoval(RemovalKind.CATEGORY_LINK, RemovalSide.THIS_DEVICE, "link-here:${manga.source}|${manga.url}|$category", "${manga.safeTitle()}: out of category $category on this device")) blocked = true
+            if (!allowRemoval(RemovalKind.CATEGORY_LINK, RemovalSide.THIS_DEVICE, "link-here:${manga.source}|${manga.url}|$category", "${manga.safeTitle()}: $category")) blocked = true
         }
         for (category in remoteKeys - merged) {
-            if (!allowRemoval(RemovalKind.CATEGORY_LINK, RemovalSide.SERVER, "link-server:${manga.source}|${manga.url}|$category", "${manga.safeTitle()}: out of category $category on the server")) blocked = true
+            if (!allowRemoval(RemovalKind.CATEGORY_LINK, RemovalSide.SERVER, "link-server:${manga.source}|${manga.url}|$category", "${manga.safeTitle()}: $category")) blocked = true
         }
         if (blocked) return Triple(0, 0, base) // nothing changes for this work, and what was agreed stays
 
@@ -1313,10 +1313,10 @@ class SyncSuwayomiServer(
             val entry = "${manga.source}|${manga.url}|${chapter.url}"
             var blockedHistory = false
             if (outcome.changeLocal && outcome.result == 0L && local > 0) {
-                if (!allowRemoval(RemovalKind.HISTORY_ENTRY, RemovalSide.THIS_DEVICE, "history-here:$entry", "${manga.safeTitle()} - ${chapter.safeName()}: out of the history on this device")) blockedHistory = true
+                if (!allowRemoval(RemovalKind.HISTORY_ENTRY, RemovalSide.THIS_DEVICE, "history-here:$entry", "${manga.safeTitle()} - ${chapter.safeName()}")) blockedHistory = true
             }
             if (outcome.changeRemote && outcome.result == 0L && remoteValue > 0) {
-                if (!allowRemoval(RemovalKind.HISTORY_ENTRY, RemovalSide.SERVER, "history-server:$entry", "${manga.safeTitle()} - ${chapter.safeName()}: out of the history on the server")) blockedHistory = true
+                if (!allowRemoval(RemovalKind.HISTORY_ENTRY, RemovalSide.SERVER, "history-server:$entry", "${manga.safeTitle()} - ${chapter.safeName()}")) blockedHistory = true
             }
             if (blockedHistory) {
                 if (baseValue > 0) agreed[chapter.url] = baseValue // what was agreed stays, so the removal is found again
